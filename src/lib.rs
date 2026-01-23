@@ -1034,6 +1034,302 @@ mod tests {
         // Note: -0 normalizes to 0
     }
 
+    // ==================== Additional Edge Case Tests ====================
+
+    #[test]
+    fn test_rounding_all_nines() {
+        // Rounding 99.999 with scale 2 should become 100.00 -> 100
+        let d = Decimal::with_precision_scale("99.999", Some(10), Some(2)).unwrap();
+        assert_eq!(d.to_string(), "100");
+
+        // Rounding 9.99 with scale 1 should become 10.0 -> 10
+        let d = Decimal::with_precision_scale("9.99", Some(10), Some(1)).unwrap();
+        assert_eq!(d.to_string(), "10");
+
+        // 999 rounding to nearest 10 (scale -1) should become 1000
+        let d = Decimal::with_precision_scale("999", Some(10), Some(-1)).unwrap();
+        assert_eq!(d.to_string(), "1000");
+    }
+
+    #[test]
+    fn test_negative_scale_small_number() {
+        // Number smaller than rounding unit, rounds to 0
+        let d = Decimal::with_precision_scale("4", Some(10), Some(-1)).unwrap();
+        assert_eq!(d.to_string(), "0");
+
+        // Number >= half the rounding unit, rounds up
+        let d = Decimal::with_precision_scale("5", Some(10), Some(-1)).unwrap();
+        assert_eq!(d.to_string(), "10");
+
+        // Negative number smaller than rounding unit
+        let d = Decimal::with_precision_scale("-4", Some(10), Some(-1)).unwrap();
+        assert_eq!(d.to_string(), "0");
+
+        // Negative number >= half unit
+        let d = Decimal::with_precision_scale("-5", Some(10), Some(-1)).unwrap();
+        assert_eq!(d.to_string(), "-10");
+    }
+
+    #[test]
+    fn test_precision_truncation() {
+        // When precision is exceeded, truncate from left
+        let d = Decimal::with_precision_scale("123456", Some(3), Some(0)).unwrap();
+        assert_eq!(d.to_string(), "456");
+
+        // With decimal places
+        let d = Decimal::with_precision_scale("12345.67", Some(4), Some(2)).unwrap();
+        assert_eq!(d.to_string(), "45.67");
+    }
+
+    #[test]
+    fn test_very_small_numbers() {
+        let d = Decimal::from_str("0.000000001").unwrap();
+        assert_eq!(d.to_string(), "0.000000001");
+        assert!(d.is_positive());
+
+        let d = Decimal::from_str("-0.000000001").unwrap();
+        assert_eq!(d.to_string(), "-0.000000001");
+        assert!(d.is_negative());
+    }
+
+    #[test]
+    fn test_very_large_numbers() {
+        let d = Decimal::from_str("999999999999999999999999999999").unwrap();
+        assert_eq!(d.to_string(), "999999999999999999999999999999");
+
+        let d = Decimal::from_str("-999999999999999999999999999999").unwrap();
+        assert_eq!(d.to_string(), "-999999999999999999999999999999");
+    }
+
+    #[test]
+    fn test_max_exponent_boundary() {
+        // Just under max exponent should work
+        let d = Decimal::from_str("1e16000").unwrap();
+        assert!(d.is_positive());
+
+        // Just over should fail
+        let result = Decimal::from_str("1e17000");
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_min_exponent_boundary() {
+        // Just above min exponent should work
+        let d = Decimal::from_str("1e-16000").unwrap();
+        assert!(d.is_positive());
+
+        // Just below should fail
+        let result = Decimal::from_str("1e-17000");
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_odd_digit_count() {
+        // Odd number of digits (tests BCD padding)
+        let d = Decimal::from_str("12345").unwrap();
+        assert_eq!(d.to_string(), "12345");
+
+        let d = Decimal::from_str("1").unwrap();
+        assert_eq!(d.to_string(), "1");
+
+        let d = Decimal::from_str("123").unwrap();
+        assert_eq!(d.to_string(), "123");
+    }
+
+    #[test]
+    fn test_negative_number_ordering() {
+        // Verify negative number byte ordering is correct
+        let a = Decimal::from_str("-100").unwrap();
+        let b = Decimal::from_str("-10").unwrap();
+        let c = Decimal::from_str("-1").unwrap();
+
+        // -100 < -10 < -1 numerically
+        assert!(a < b);
+        assert!(b < c);
+
+        // Byte ordering should match
+        assert!(a.as_bytes() < b.as_bytes());
+        assert!(b.as_bytes() < c.as_bytes());
+    }
+
+    #[test]
+    fn test_from_bytes_unchecked_roundtrip() {
+        let original = Decimal::from_str("123.456").unwrap();
+        let bytes = original.as_bytes().to_vec();
+        let restored = Decimal::from_bytes_unchecked(bytes);
+        assert_eq!(original, restored);
+    }
+
+    #[test]
+    fn test_special_value_checks() {
+        let d = Decimal::from_str("123.456").unwrap();
+        assert!(!d.is_nan());
+        assert!(!d.is_infinity());
+        assert!(!d.is_pos_infinity());
+        assert!(!d.is_neg_infinity());
+        assert!(!d.is_special());
+        assert!(d.is_finite());
+    }
+
+    #[test]
+    fn test_equality_and_hash_consistency() {
+        use std::collections::HashMap;
+
+        let d1 = Decimal::from_str("123.456").unwrap();
+        let d2 = Decimal::from_str("123.456").unwrap();
+        let d3 = Decimal::from_str("123.457").unwrap();
+
+        // Equal values should be equal
+        assert_eq!(d1, d2);
+        assert_ne!(d1, d3);
+
+        // Equal values should have same hash (can be used as map keys)
+        let mut map = HashMap::new();
+        map.insert(d1.clone(), "first");
+        map.insert(d2.clone(), "second"); // Should overwrite
+        assert_eq!(map.len(), 1);
+        assert_eq!(map.get(&d1), Some(&"second"));
+    }
+
+    #[test]
+    fn test_scale_zero() {
+        // Scale 0 should keep integer part only
+        let d = Decimal::with_precision_scale("123.999", Some(10), Some(0)).unwrap();
+        assert_eq!(d.to_string(), "124"); // Rounds up
+    }
+
+    #[test]
+    fn test_only_fractional_with_precision_scale() {
+        let d = Decimal::with_precision_scale(".5", Some(10), Some(2)).unwrap();
+        assert_eq!(d.to_string(), "0.5");
+    }
+
+    #[test]
+    fn test_default_impl() {
+        let d = Decimal::default();
+        assert!(d.is_zero());
+        assert_eq!(d.to_string(), "0");
+    }
+
+    #[test]
+    fn test_precision_zero_integer_digits() {
+        // When precision equals scale, no integer digits are allowed
+        // This triggers the max_integer_digits == 0 branch
+        let d = Decimal::with_precision_scale("123.456", Some(2), Some(2)).unwrap();
+        assert_eq!(d.to_string(), "0.46");
+    }
+
+    #[test]
+    fn test_negative_with_precision_truncation() {
+        // Negative number that gets truncated by precision constraints
+        let d = Decimal::with_precision_scale("-123.456", Some(3), Some(2)).unwrap();
+        assert_eq!(d.to_string(), "-3.46");
+    }
+
+    #[test]
+    fn test_invalid_sign_byte() {
+        // Sign bytes: SIGN_NEGATIVE=0x00, SIGN_ZERO=0x80, SIGN_POSITIVE=0xFF
+        // Any other sign byte is invalid
+
+        // Sign byte 0x01 is invalid
+        let result = Decimal::from_bytes(&[0x01, 0x40, 0x00, 0x12]);
+        assert!(result.is_err());
+
+        // Sign byte 0x7F is also invalid
+        let result = Decimal::from_bytes(&[0x7F, 0x40, 0x00, 0x12]);
+        assert!(result.is_err());
+
+        // Sign byte 0xFE is also invalid
+        let result = Decimal::from_bytes(&[0xFE, 0x40, 0x00, 0x12]);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_invalid_bcd_encoding() {
+        // Construct bytes that would decode to invalid BCD (digit > 9)
+        // SIGN_POSITIVE = 0xFF, with valid exponent, but invalid BCD mantissa
+        // A valid BCD digit must have each nibble 0-9. 0xAB has A=10, B=11 (both > 9)
+        let invalid_bytes = vec![
+            0xFF, // SIGN_POSITIVE
+            0x80, 0x00, // Valid exponent (middle of range)
+            0xAB, // Invalid BCD: high nibble = 10, low nibble = 11
+        ];
+        let result = Decimal::from_bytes(&invalid_bytes);
+        assert!(result.is_err());
+
+        // Also test with just high nibble invalid
+        let invalid_bytes = vec![
+            0xFF, // SIGN_POSITIVE
+            0x80, 0x00, // Valid exponent
+            0xA1, // Invalid BCD: high nibble = 10, low nibble = 1
+        ];
+        let result = Decimal::from_bytes(&invalid_bytes);
+        assert!(result.is_err());
+
+        // Also test with just low nibble invalid
+        let invalid_bytes = vec![
+            0xFF, // SIGN_POSITIVE
+            0x80, 0x00, // Valid exponent
+            0x1B, // Invalid BCD: high nibble = 1, low nibble = 11
+        ];
+        let result = Decimal::from_bytes(&invalid_bytes);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_reserved_exponent_positive() {
+        // SIGN_POSITIVE = 0xFF
+        // Reserved exponents: 0xFFFE (Infinity), 0xFFFF (NaN)
+        // If we have more than 3 bytes, special value check is skipped
+        // but decode_exponent will catch the reserved value
+
+        // Reserved NaN exponent (0xFFFF) with extra mantissa byte
+        let bytes_with_reserved_exp = vec![
+            0xFF, // SIGN_POSITIVE
+            0xFF, 0xFF, // Reserved for NaN
+            0x12, // Some mantissa (makes it 4 bytes, not 3)
+        ];
+        let result = Decimal::from_bytes(&bytes_with_reserved_exp);
+        assert!(result.is_err());
+
+        // Reserved Infinity exponent (0xFFFE) with extra mantissa byte
+        let bytes_with_reserved_exp = vec![
+            0xFF, // SIGN_POSITIVE
+            0xFF, 0xFE, // Reserved for Infinity
+            0x12, // Some mantissa (makes it 4 bytes, not 3)
+        ];
+        let result = Decimal::from_bytes(&bytes_with_reserved_exp);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_reserved_exponent_negative() {
+        // SIGN_NEGATIVE = 0x00
+        // Reserved exponent for -Infinity: 0x0000
+        // If we have more than 3 bytes, special value check is skipped
+
+        let bytes_with_reserved_exp = vec![
+            0x00, // SIGN_NEGATIVE
+            0x00, 0x00, // Reserved for -Infinity
+            0x12, // Some mantissa (makes it 4 bytes, not 3)
+        ];
+        let result = Decimal::from_bytes(&bytes_with_reserved_exp);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_empty_mantissa_bytes() {
+        // Construct bytes with valid sign and exponent but no mantissa
+        // This should decode to 0 via the empty digits path in format_decimal
+        let bytes_no_mantissa = vec![
+            0xFF, // SIGN_POSITIVE
+            0x80, 0x00, // Valid exponent
+            // No mantissa bytes
+        ];
+        let d = Decimal::from_bytes(&bytes_no_mantissa).unwrap();
+        assert_eq!(d.to_string(), "0");
+    }
+
     // ==================== rust_decimal Interop Tests ====================
 
     #[cfg(feature = "rust_decimal")]
