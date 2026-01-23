@@ -19,6 +19,7 @@
 //!
 //! ```
 //! use decimal_bytes::Decimal;
+//! use std::str::FromStr;
 //!
 //! // Create decimals
 //! let a = Decimal::from_str("123.456").unwrap();
@@ -80,22 +81,6 @@ pub struct Decimal {
 }
 
 impl Decimal {
-    /// Creates a new Decimal from a string representation.
-    ///
-    /// # Examples
-    ///
-    /// ```
-    /// use decimal_bytes::Decimal;
-    ///
-    /// let d = Decimal::from_str("123.456").unwrap();
-    /// let d = Decimal::from_str("-0.001").unwrap();
-    /// let d = Decimal::from_str("1e10").unwrap();
-    /// ```
-    pub fn from_str(s: &str) -> Result<Self, DecimalError> {
-        let bytes = encode_decimal(s)?;
-        Ok(Self { bytes })
-    }
-
     /// Creates a new Decimal with precision and scale constraints.
     ///
     /// Values that exceed the constraints are truncated/rounded to fit.
@@ -141,6 +126,7 @@ impl Decimal {
     ///
     /// ```
     /// use decimal_bytes::Decimal;
+    /// use std::str::FromStr;
     ///
     /// let original = Decimal::from_str("123.456").unwrap();
     /// let bytes = original.as_bytes();
@@ -179,13 +165,6 @@ impl Decimal {
     #[inline]
     pub fn into_bytes(self) -> Vec<u8> {
         self.bytes
-    }
-
-    /// Returns the string representation of this decimal.
-    ///
-    /// Note: This is computed on demand from the byte representation.
-    pub fn to_string(&self) -> String {
-        decode_to_string(&self.bytes).expect("Decimal contains valid bytes")
     }
 
     /// Returns true if this decimal represents zero.
@@ -264,21 +243,38 @@ impl Decimal {
 impl FromStr for Decimal {
     type Err = DecimalError;
 
+    /// Creates a new Decimal from a string representation.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use decimal_bytes::Decimal;
+    /// use std::str::FromStr;
+    ///
+    /// let d = Decimal::from_str("123.456").unwrap();
+    /// let d = Decimal::from_str("-0.001").unwrap();
+    /// let d = Decimal::from_str("1e10").unwrap();
+    /// // Or use parse:
+    /// let d: Decimal = "42.5".parse().unwrap();
+    /// ```
     fn from_str(s: &str) -> Result<Self, Self::Err> {
-        Decimal::from_str(s)
+        let bytes = encode_decimal(s)?;
+        Ok(Self { bytes })
     }
 }
 
 impl fmt::Display for Decimal {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "{}", self.to_string())
+        let s = decode_to_string(&self.bytes).expect("Decimal contains valid bytes");
+        write!(f, "{}", s)
     }
 }
 
 impl fmt::Debug for Decimal {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let value = decode_to_string(&self.bytes).expect("Decimal contains valid bytes");
         f.debug_struct("Decimal")
-            .field("value", &self.to_string())
+            .field("value", &value)
             .field("bytes", &self.bytes)
             .finish()
     }
@@ -361,6 +357,7 @@ impl Default for Decimal {
 #[cfg(feature = "rust_decimal")]
 mod rust_decimal_interop {
     use super::{Decimal, DecimalError};
+    use std::str::FromStr;
 
     impl TryFrom<rust_decimal::Decimal> for Decimal {
         type Error = DecimalError;
@@ -425,6 +422,7 @@ mod rust_decimal_interop {
 #[cfg(feature = "bigdecimal")]
 mod bigdecimal_interop {
     use super::{Decimal, DecimalError};
+    use std::str::FromStr;
 
     impl TryFrom<bigdecimal::BigDecimal> for Decimal {
         type Error = DecimalError;

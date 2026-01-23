@@ -91,7 +91,7 @@ pub fn encode_decimal(value: &str) -> Result<Vec<u8>, DecimalError> {
         return Ok(vec![SIGN_ZERO]);
     }
 
-    let mut result = Vec::with_capacity(1 + 2 + (digits.len() + 1) / 2);
+    let mut result = Vec::with_capacity(1 + 2 + digits.len().div_ceil(2));
 
     // Sign byte
     result.push(if is_negative {
@@ -307,7 +307,7 @@ fn parse_decimal(value: &str) -> Result<(bool, Vec<u8>, i32), DecimalError> {
         .collect();
 
     // Validate exponent range
-    if exponent > MAX_EXPONENT || exponent < MIN_EXPONENT {
+    if !(MIN_EXPONENT..=MAX_EXPONENT).contains(&exponent) {
         return Err(DecimalError::PrecisionOverflow);
     }
 
