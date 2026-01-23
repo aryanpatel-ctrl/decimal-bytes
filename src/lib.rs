@@ -1324,7 +1324,7 @@ mod tests {
         let bytes_no_mantissa = vec![
             0xFF, // SIGN_POSITIVE
             0x80, 0x00, // Valid exponent
-            // No mantissa bytes
+                  // No mantissa bytes
         ];
         let d = Decimal::from_bytes(&bytes_no_mantissa).unwrap();
         assert_eq!(d.to_string(), "0");
