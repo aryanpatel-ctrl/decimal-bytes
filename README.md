@@ -80,6 +80,32 @@ assert!(Decimal::from_str("1000000").unwrap() < pos_inf);
 assert!(pos_inf < nan);
 ```
 
+### PostgreSQL vs IEEE 754 Semantics
+
+This library follows **PostgreSQL semantics** for special values, which differ from IEEE 754 floating-point:
+
+| Behavior | PostgreSQL / decimal-bytes | IEEE 754 float |
+|----------|---------------------------|----------------|
+| `NaN == NaN` | `true` | `false` |
+| `NaN` ordering | Greatest value (> Infinity) | Unordered |
+| `Infinity == Infinity` | `true` | `true` |
+
+```rust
+use decimal_bytes::Decimal;
+
+let nan1 = Decimal::nan();
+let nan2 = Decimal::nan();
+let inf = Decimal::infinity();
+
+// NaN equals itself (PostgreSQL behavior, unlike IEEE 754)
+assert_eq!(nan1, nan2);
+
+// NaN is greater than everything, including Infinity
+assert!(nan1 > inf);
+```
+
+This makes `Decimal` suitable for use in indexes, sorting, and deduplication where consistent ordering and equality semantics are required.
+
 ## PostgreSQL Compatibility
 
 This crate implements the PostgreSQL NUMERIC specification:

@@ -46,6 +46,34 @@
 //! ```text
 //! -Infinity < negative numbers < zero < positive numbers < +Infinity < NaN
 //! ```
+//!
+//! ## Special Value Semantics (PostgreSQL vs IEEE 754)
+//!
+//! This library follows **PostgreSQL semantics** for special values, which differ
+//! from IEEE 754 floating-point:
+//!
+//! | Behavior | PostgreSQL / decimal-bytes | IEEE 754 float |
+//! |----------|---------------------------|----------------|
+//! | `NaN == NaN` | `true` | `false` |
+//! | `NaN` ordering | Greatest value (> Infinity) | Unordered |
+//! | `Infinity == Infinity` | `true` | `true` |
+//!
+//! ```
+//! use decimal_bytes::Decimal;
+//!
+//! let nan1 = Decimal::nan();
+//! let nan2 = Decimal::nan();
+//! let inf = Decimal::infinity();
+//!
+//! // NaN equals itself (PostgreSQL behavior, unlike IEEE 754)
+//! assert_eq!(nan1, nan2);
+//!
+//! // NaN is greater than everything, including Infinity
+//! assert!(nan1 > inf);
+//! ```
+//!
+//! This makes `Decimal` suitable for use in indexes, sorting, and deduplication
+//! where consistent ordering and equality semantics are required.
 
 mod encoding;
 
@@ -219,6 +247,21 @@ impl Decimal {
     }
 
     /// Creates positive infinity.
+    ///
+    /// Infinity is greater than all finite numbers but less than NaN.
+    /// Two positive infinities are equal to each other.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use decimal_bytes::Decimal;
+    /// use std::str::FromStr;
+    ///
+    /// let inf = Decimal::infinity();
+    /// let big = Decimal::from_str("999999999999").unwrap();
+    /// assert!(inf > big);
+    /// assert_eq!(inf, Decimal::infinity());
+    /// ```
     pub fn infinity() -> Self {
         Self {
             bytes: encode_special_value(SpecialValue::Infinity),
@@ -226,6 +269,21 @@ impl Decimal {
     }
 
     /// Creates negative infinity.
+    ///
+    /// Negative infinity is less than all finite numbers and positive infinity.
+    /// Two negative infinities are equal to each other.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use decimal_bytes::Decimal;
+    /// use std::str::FromStr;
+    ///
+    /// let neg_inf = Decimal::neg_infinity();
+    /// let small = Decimal::from_str("-999999999999").unwrap();
+    /// assert!(neg_inf < small);
+    /// assert_eq!(neg_inf, Decimal::neg_infinity());
+    /// ```
     pub fn neg_infinity() -> Self {
         Self {
             bytes: encode_special_value(SpecialValue::NegInfinity),
@@ -233,6 +291,33 @@ impl Decimal {
     }
 
     /// Creates NaN (Not a Number).
+    ///
+    /// # PostgreSQL Semantics
+    ///
+    /// Unlike IEEE 754 floating-point where `NaN != NaN`, this follows PostgreSQL
+    /// semantics where:
+    /// - `NaN == NaN` is `true`
+    /// - `NaN` is the greatest value (greater than positive infinity)
+    /// - All NaN values are equal regardless of how they were created
+    ///
+    /// This makes NaN usable in sorting, indexing, and deduplication.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use decimal_bytes::Decimal;
+    /// use std::str::FromStr;
+    ///
+    /// let nan1 = Decimal::nan();
+    /// let nan2 = Decimal::from_str("NaN").unwrap();
+    /// let inf = Decimal::infinity();
+    ///
+    /// // NaN equals itself (PostgreSQL behavior)
+    /// assert_eq!(nan1, nan2);
+    ///
+    /// // NaN is greater than everything
+    /// assert!(nan1 > inf);
+    /// ```
     pub fn nan() -> Self {
         Self {
             bytes: encode_special_value(SpecialValue::NaN),
