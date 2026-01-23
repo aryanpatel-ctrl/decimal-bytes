@@ -11,8 +11,9 @@
 //!
 //! - **Bytes-first storage**: The primary representation is a compact byte array
 //! - **Lexicographic ordering**: Byte comparison matches numerical comparison
-//! - **Arbitrary precision**: Supports numbers with many significant digits
-//! - **SQL NUMERIC compatibility**: Supports precision and scale constraints
+//! - **Arbitrary precision**: Supports up to 131,072 digits before and 16,383 after decimal
+//! - **PostgreSQL NUMERIC compatibility**: Full support for precision, scale, and special values
+//! - **Special values**: Infinity, -Infinity, and NaN with correct PostgreSQL sort order
 //!
 //! ## Example
 //!
@@ -29,6 +30,20 @@
 //!
 //! // Display the value
 //! assert_eq!(a.to_string(), "123.456");
+//!
+//! // Special values (PostgreSQL compatible)
+//! let inf = Decimal::infinity();
+//! let nan = Decimal::nan();
+//! assert!(a < inf);
+//! assert!(inf < nan);
+//! ```
+//!
+//! ## Sort Order
+//!
+//! The lexicographic byte order matches PostgreSQL NUMERIC:
+//!
+//! ```text
+//! -Infinity < negative numbers < zero < positive numbers < +Infinity < NaN
 //! ```
 
 mod encoding;
@@ -41,7 +56,11 @@ use std::str::FromStr;
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
 pub use encoding::DecimalError;
-use encoding::{decode_to_string, encode_decimal, encode_decimal_with_constraints};
+pub use encoding::SpecialValue;
+use encoding::{
+    decode_special_value, decode_to_string, encode_decimal, encode_decimal_with_constraints,
+    encode_special_value, ENCODING_NAN, ENCODING_NEG_INFINITY, ENCODING_POS_INFINITY,
+};
 
 /// An arbitrary precision decimal number stored as sortable bytes.
 ///
@@ -83,7 +102,13 @@ impl Decimal {
     /// This is compatible with SQL NUMERIC(precision, scale) semantics.
     ///
     /// - `precision`: Maximum total number of significant digits (None = unlimited)
-    /// - `scale`: Maximum digits after the decimal point (None = unlimited)
+    /// - `scale`: Digits after decimal point; negative values round to left of decimal
+    ///
+    /// # PostgreSQL Compatibility
+    ///
+    /// Supports negative scale (rounds to powers of 10):
+    /// - `scale = -3` rounds to nearest 1000
+    /// - `NUMERIC(2, -3)` allows values like -99000 to 99000
     ///
     /// # Examples
     ///
@@ -93,11 +118,15 @@ impl Decimal {
     /// // NUMERIC(5, 2) - up to 5 digits total, 2 after decimal
     /// let d = Decimal::with_precision_scale("123.456", Some(5), Some(2)).unwrap();
     /// assert_eq!(d.to_string(), "123.46"); // Rounded to 2 decimal places
+    ///
+    /// // NUMERIC(2, -3) - rounds to nearest 1000, max 2 significant digits
+    /// let d = Decimal::with_precision_scale("12345", Some(2), Some(-3)).unwrap();
+    /// assert_eq!(d.to_string(), "12000"); // Rounded to nearest 1000
     /// ```
     pub fn with_precision_scale(
         s: &str,
         precision: Option<u32>,
-        scale: Option<u32>,
+        scale: Option<i32>,
     ) -> Result<Self, DecimalError> {
         let bytes = encode_decimal_with_constraints(s, precision, scale)?;
         Ok(Self { bytes })
@@ -174,10 +203,61 @@ impl Decimal {
         !self.bytes.is_empty() && self.bytes[0] == encoding::SIGN_POSITIVE
     }
 
+    /// Returns true if this decimal represents positive infinity.
+    pub fn is_pos_infinity(&self) -> bool {
+        self.bytes.as_slice() == ENCODING_POS_INFINITY
+    }
+
+    /// Returns true if this decimal represents negative infinity.
+    pub fn is_neg_infinity(&self) -> bool {
+        self.bytes.as_slice() == ENCODING_NEG_INFINITY
+    }
+
+    /// Returns true if this decimal represents positive or negative infinity.
+    pub fn is_infinity(&self) -> bool {
+        self.is_pos_infinity() || self.is_neg_infinity()
+    }
+
+    /// Returns true if this decimal represents NaN (Not a Number).
+    pub fn is_nan(&self) -> bool {
+        self.bytes.as_slice() == ENCODING_NAN
+    }
+
+    /// Returns true if this decimal is a special value (Infinity or NaN).
+    pub fn is_special(&self) -> bool {
+        decode_special_value(&self.bytes).is_some()
+    }
+
+    /// Returns true if this decimal is a finite number (not Infinity or NaN).
+    pub fn is_finite(&self) -> bool {
+        !self.is_special()
+    }
+
     /// Returns the number of bytes used to store this decimal.
     #[inline]
     pub fn byte_len(&self) -> usize {
         self.bytes.len()
+    }
+
+    /// Creates positive infinity.
+    pub fn infinity() -> Self {
+        Self {
+            bytes: encode_special_value(SpecialValue::Infinity),
+        }
+    }
+
+    /// Creates negative infinity.
+    pub fn neg_infinity() -> Self {
+        Self {
+            bytes: encode_special_value(SpecialValue::NegInfinity),
+        }
+    }
+
+    /// Creates NaN (Not a Number).
+    pub fn nan() -> Self {
+        Self {
+            bytes: encode_special_value(SpecialValue::NaN),
+        }
     }
 }
 
@@ -290,6 +370,8 @@ mod tests {
         assert!(d.is_zero());
         assert!(!d.is_negative());
         assert!(!d.is_positive());
+        assert!(d.is_finite());
+        assert!(!d.is_special());
     }
 
     #[test]
@@ -298,6 +380,7 @@ mod tests {
         assert!(d.is_negative());
         assert!(!d.is_zero());
         assert!(!d.is_positive());
+        assert!(d.is_finite());
     }
 
     #[test]
@@ -306,6 +389,7 @@ mod tests {
         assert!(d.is_positive());
         assert!(!d.is_zero());
         assert!(!d.is_negative());
+        assert!(d.is_finite());
     }
 
     #[test]
@@ -400,10 +484,161 @@ mod tests {
         // Check that storage is reasonably efficient
         let d = Decimal::from_str("123456789").unwrap();
         // 1 byte sign + ~2 bytes exponent + ~5 bytes mantissa (9 digits / 2)
-        assert!(d.byte_len() <= 10, "Expected <= 10 bytes, got {}", d.byte_len());
+        assert!(
+            d.byte_len() <= 10,
+            "Expected <= 10 bytes, got {}",
+            d.byte_len()
+        );
 
         let d = Decimal::from_str("0.000001").unwrap();
         // Should be compact for small numbers too
-        assert!(d.byte_len() <= 6, "Expected <= 6 bytes, got {}", d.byte_len());
+        assert!(
+            d.byte_len() <= 6,
+            "Expected <= 6 bytes, got {}",
+            d.byte_len()
+        );
+    }
+
+    // ==================== Special Values Tests ====================
+
+    #[test]
+    fn test_infinity_creation() {
+        let pos_inf = Decimal::infinity();
+        assert!(pos_inf.is_pos_infinity());
+        assert!(pos_inf.is_infinity());
+        assert!(!pos_inf.is_neg_infinity());
+        assert!(!pos_inf.is_nan());
+        assert!(pos_inf.is_special());
+        assert!(!pos_inf.is_finite());
+        assert_eq!(pos_inf.to_string(), "Infinity");
+
+        let neg_inf = Decimal::neg_infinity();
+        assert!(neg_inf.is_neg_infinity());
+        assert!(neg_inf.is_infinity());
+        assert!(!neg_inf.is_pos_infinity());
+        assert!(!neg_inf.is_nan());
+        assert!(neg_inf.is_special());
+        assert!(!neg_inf.is_finite());
+        assert_eq!(neg_inf.to_string(), "-Infinity");
+    }
+
+    #[test]
+    fn test_nan_creation() {
+        let nan = Decimal::nan();
+        assert!(nan.is_nan());
+        assert!(nan.is_special());
+        assert!(!nan.is_finite());
+        assert!(!nan.is_infinity());
+        assert!(!nan.is_zero());
+        assert_eq!(nan.to_string(), "NaN");
+    }
+
+    #[test]
+    fn test_special_value_from_str() {
+        let pos_inf = Decimal::from_str("Infinity").unwrap();
+        assert!(pos_inf.is_pos_infinity());
+
+        let neg_inf = Decimal::from_str("-Infinity").unwrap();
+        assert!(neg_inf.is_neg_infinity());
+
+        let nan = Decimal::from_str("NaN").unwrap();
+        assert!(nan.is_nan());
+
+        // Case-insensitive
+        let inf = Decimal::from_str("infinity").unwrap();
+        assert!(inf.is_pos_infinity());
+
+        let inf = Decimal::from_str("INF").unwrap();
+        assert!(inf.is_pos_infinity());
+    }
+
+    #[test]
+    fn test_special_value_ordering() {
+        // PostgreSQL order: -Infinity < negatives < zero < positives < Infinity < NaN
+        let neg_inf = Decimal::neg_infinity();
+        let neg_num = Decimal::from_str("-1000").unwrap();
+        let zero = Decimal::from_str("0").unwrap();
+        let pos_num = Decimal::from_str("1000").unwrap();
+        let pos_inf = Decimal::infinity();
+        let nan = Decimal::nan();
+
+        assert!(neg_inf < neg_num);
+        assert!(neg_num < zero);
+        assert!(zero < pos_num);
+        assert!(pos_num < pos_inf);
+        assert!(pos_inf < nan);
+
+        // Verify byte ordering matches
+        assert!(neg_inf.as_bytes() < neg_num.as_bytes());
+        assert!(neg_num.as_bytes() < zero.as_bytes());
+        assert!(zero.as_bytes() < pos_num.as_bytes());
+        assert!(pos_num.as_bytes() < pos_inf.as_bytes());
+        assert!(pos_inf.as_bytes() < nan.as_bytes());
+    }
+
+    #[test]
+    fn test_special_value_equality() {
+        // All NaNs are equal (PostgreSQL semantics)
+        let nan1 = Decimal::from_str("NaN").unwrap();
+        let nan2 = Decimal::from_str("nan").unwrap();
+        let nan3 = Decimal::nan();
+        assert_eq!(nan1, nan2);
+        assert_eq!(nan2, nan3);
+
+        // Infinities are equal to themselves
+        let inf1 = Decimal::infinity();
+        let inf2 = Decimal::from_str("Infinity").unwrap();
+        assert_eq!(inf1, inf2);
+
+        let neg_inf1 = Decimal::neg_infinity();
+        let neg_inf2 = Decimal::from_str("-Infinity").unwrap();
+        assert_eq!(neg_inf1, neg_inf2);
+    }
+
+    #[test]
+    fn test_special_value_serialization() {
+        let inf = Decimal::infinity();
+        let json = serde_json::to_string(&inf).unwrap();
+        assert_eq!(json, "\"Infinity\"");
+        let restored: Decimal = serde_json::from_str(&json).unwrap();
+        assert_eq!(inf, restored);
+
+        let nan = Decimal::nan();
+        let json = serde_json::to_string(&nan).unwrap();
+        assert_eq!(json, "\"NaN\"");
+        let restored: Decimal = serde_json::from_str(&json).unwrap();
+        assert_eq!(nan, restored);
+    }
+
+    #[test]
+    fn test_special_value_byte_efficiency() {
+        // Special values should be compact (3 bytes each)
+        assert_eq!(Decimal::infinity().byte_len(), 3);
+        assert_eq!(Decimal::neg_infinity().byte_len(), 3);
+        assert_eq!(Decimal::nan().byte_len(), 3);
+    }
+
+    // ==================== Negative Scale Tests ====================
+
+    #[test]
+    fn test_negative_scale() {
+        // Round to nearest 1000
+        let d = Decimal::with_precision_scale("12345", Some(10), Some(-3)).unwrap();
+        assert_eq!(d.to_string(), "12000");
+
+        // Round up
+        let d = Decimal::with_precision_scale("12500", Some(10), Some(-3)).unwrap();
+        assert_eq!(d.to_string(), "13000");
+
+        // Round to nearest 100
+        let d = Decimal::with_precision_scale("1234", Some(10), Some(-2)).unwrap();
+        assert_eq!(d.to_string(), "1200");
+    }
+
+    #[test]
+    fn test_negative_scale_with_precision() {
+        // NUMERIC(2, -3): 2 significant digits, round to nearest 1000
+        let d = Decimal::with_precision_scale("12345", Some(2), Some(-3)).unwrap();
+        assert_eq!(d.to_string(), "12000");
     }
 }

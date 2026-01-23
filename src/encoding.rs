@@ -12,18 +12,43 @@
 //! - **Sign byte**: 0x00 for negative, 0x80 for zero, 0xFF for positive
 //! - **Exponent**: Variable-length, biased encoding (inverted for negative numbers)
 //! - **Mantissa**: BCD-encoded digits, 2 per byte (inverted for negative numbers)
+//!
+//! ## Special Values (PostgreSQL compatible)
+//!
+//! - **-Infinity**: Sorts less than all negative numbers
+//! - **+Infinity**: Sorts greater than all positive numbers
+//! - **NaN**: Sorts greater than +Infinity (per PostgreSQL semantics)
+//!
+//! ## Sort Order
+//!
+//! ```text
+//! -Infinity < negatives < zero < positives < +Infinity < NaN
+//! ```
 
 use thiserror::Error;
 
-/// Sign byte values
+/// Sign byte values for regular numbers
 pub(crate) const SIGN_NEGATIVE: u8 = 0x00;
 pub(crate) const SIGN_ZERO: u8 = 0x80;
 pub(crate) const SIGN_POSITIVE: u8 = 0xFF;
 
+/// Special value encodings (designed for correct lexicographic ordering)
+/// -Infinity: [0x00, 0x00, 0x00] - sorts before all negative numbers
+pub const ENCODING_NEG_INFINITY: [u8; 3] = [0x00, 0x00, 0x00];
+/// +Infinity: [0xFF, 0xFF, 0xFE] - sorts after all positive numbers
+pub const ENCODING_POS_INFINITY: [u8; 3] = [0xFF, 0xFF, 0xFE];
+/// NaN: [0xFF, 0xFF, 0xFF] - sorts after +Infinity (PostgreSQL semantics)
+pub const ENCODING_NAN: [u8; 3] = [0xFF, 0xFF, 0xFF];
+
+/// Reserved exponent values (to distinguish special values from regular numbers)
+const RESERVED_NEG_INFINITY_EXP: u16 = 0x0000; // For negative sign byte
+const RESERVED_POS_INFINITY_EXP: u16 = 0xFFFE; // For positive sign byte
+const RESERVED_NAN_EXP: u16 = 0xFFFF; // For positive sign byte
+
 /// Exponent bias to make all exponents positive for encoding
 const EXPONENT_BIAS: i32 = 16384;
-const MAX_EXPONENT: i32 = 32767 - EXPONENT_BIAS; // ~16383
-const MIN_EXPONENT: i32 = -EXPONENT_BIAS; // -16384
+const MAX_EXPONENT: i32 = 32767 - EXPONENT_BIAS - 2; // Reserve top 2 values for Infinity/NaN
+const MIN_EXPONENT: i32 = -EXPONENT_BIAS + 1; // Reserve 0x0000 for -Infinity
 
 /// Errors that can occur during decimal encoding/decoding.
 #[derive(Error, Debug, Clone, PartialEq)]
@@ -41,8 +66,24 @@ pub enum DecimalError {
     InvalidEncoding,
 }
 
+/// Special decimal values (IEEE 754 / PostgreSQL compatible)
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SpecialValue {
+    /// Positive infinity
+    Infinity,
+    /// Negative infinity
+    NegInfinity,
+    /// Not a Number
+    NaN,
+}
+
 /// Encodes a decimal string to sortable bytes.
 pub fn encode_decimal(value: &str) -> Result<Vec<u8>, DecimalError> {
+    // Check for special values first
+    if let Some(special) = parse_special_value(value) {
+        return Ok(encode_special_value(special));
+    }
+
     let (is_negative, digits, exponent) = parse_decimal(value)?;
 
     // Handle zero
@@ -68,12 +109,65 @@ pub fn encode_decimal(value: &str) -> Result<Vec<u8>, DecimalError> {
     Ok(result)
 }
 
+/// Parses special value strings (case-insensitive).
+fn parse_special_value(value: &str) -> Option<SpecialValue> {
+    let trimmed = value.trim();
+    let lower = trimmed.to_lowercase();
+
+    match lower.as_str() {
+        "infinity" | "inf" | "+infinity" | "+inf" => Some(SpecialValue::Infinity),
+        "-infinity" | "-inf" => Some(SpecialValue::NegInfinity),
+        "nan" | "-nan" | "+nan" => Some(SpecialValue::NaN), // PostgreSQL treats all NaN as equal
+        _ => None,
+    }
+}
+
+/// Encodes a special value to bytes.
+pub fn encode_special_value(special: SpecialValue) -> Vec<u8> {
+    match special {
+        SpecialValue::NegInfinity => ENCODING_NEG_INFINITY.to_vec(),
+        SpecialValue::Infinity => ENCODING_POS_INFINITY.to_vec(),
+        SpecialValue::NaN => ENCODING_NAN.to_vec(),
+    }
+}
+
+/// Checks if bytes represent a special value.
+pub fn decode_special_value(bytes: &[u8]) -> Option<SpecialValue> {
+    if bytes.len() == 3 {
+        if bytes == ENCODING_NEG_INFINITY {
+            return Some(SpecialValue::NegInfinity);
+        }
+        if bytes == ENCODING_POS_INFINITY {
+            return Some(SpecialValue::Infinity);
+        }
+        if bytes == ENCODING_NAN {
+            return Some(SpecialValue::NaN);
+        }
+    }
+    None
+}
+
 /// Encodes a decimal string with precision and scale constraints.
+///
+/// # Arguments
+/// * `value` - The decimal string to encode
+/// * `precision` - Maximum total significant digits (None = unlimited)
+/// * `scale` - Number of digits after decimal point; negative values round to left of decimal
+///
+/// # PostgreSQL Compatibility
+/// Supports negative scale (rounds to powers of 10):
+/// - scale = -3 rounds to nearest 1000
+/// - NUMERIC(2, -3) allows values like -99000 to 99000
 pub fn encode_decimal_with_constraints(
     value: &str,
     precision: Option<u32>,
-    scale: Option<u32>,
+    scale: Option<i32>,
 ) -> Result<Vec<u8>, DecimalError> {
+    // Handle special values - they ignore precision/scale
+    if parse_special_value(value).is_some() {
+        return encode_decimal(value);
+    }
+
     let truncated = truncate_decimal(value, precision, scale)?;
     encode_decimal(&truncated)
 }
@@ -82,6 +176,15 @@ pub fn encode_decimal_with_constraints(
 pub fn decode_to_string(bytes: &[u8]) -> Result<String, DecimalError> {
     if bytes.is_empty() {
         return Err(DecimalError::InvalidEncoding);
+    }
+
+    // Check for special values first
+    if let Some(special) = decode_special_value(bytes) {
+        return Ok(match special {
+            SpecialValue::NegInfinity => "-Infinity".to_string(),
+            SpecialValue::Infinity => "Infinity".to_string(),
+            SpecialValue::NaN => "NaN".to_string(),
+        });
     }
 
     let sign_byte = bytes[0];
@@ -97,7 +200,7 @@ pub fn decode_to_string(bytes: &[u8]) -> Result<String, DecimalError> {
         return Err(DecimalError::InvalidEncoding);
     }
 
-    // Decode exponent
+    // Decode exponent (also validates it's not a reserved value)
     let (exponent, mantissa_start) = decode_exponent(&bytes[1..], is_negative)?;
 
     // Decode mantissa
@@ -214,6 +317,7 @@ fn parse_decimal(value: &str) -> Result<(bool, Vec<u8>, i32), DecimalError> {
 /// Encodes the exponent as variable-length bytes.
 fn encode_exponent(result: &mut Vec<u8>, exponent: i32, is_negative: bool) {
     // Bias the exponent to make it always positive
+    // Note: We add 1 to reserve 0x0000 for -Infinity on negative side
     let biased = (exponent + EXPONENT_BIAS) as u16;
 
     // For negative numbers, invert the exponent so larger negative numbers sort first
@@ -231,6 +335,15 @@ fn decode_exponent(bytes: &[u8], is_negative: bool) -> Result<(i32, usize), Deci
     }
 
     let encoded = ((bytes[0] as u16) << 8) | (bytes[1] as u16);
+
+    // Check for reserved values (should have been caught by decode_special_value)
+    if is_negative && encoded == RESERVED_NEG_INFINITY_EXP {
+        return Err(DecimalError::InvalidEncoding);
+    }
+    if !is_negative && (encoded == RESERVED_POS_INFINITY_EXP || encoded == RESERVED_NAN_EXP) {
+        return Err(DecimalError::InvalidEncoding);
+    }
+
     let biased = if is_negative { !encoded } else { encoded };
     let exponent = (biased as i32) - EXPONENT_BIAS;
 
@@ -331,10 +444,15 @@ fn format_decimal(is_negative: bool, digits: &[u8], exponent: i32) -> Result<Str
 }
 
 /// Truncates a decimal string to fit precision and scale constraints.
+///
+/// # PostgreSQL Compatibility
+/// - Positive scale: digits after decimal point
+/// - Negative scale: rounds to left of decimal (e.g., -3 rounds to nearest 1000)
+/// - Precision: total significant (non-rounded) digits
 fn truncate_decimal(
     value: &str,
     precision: Option<u32>,
-    scale: Option<u32>,
+    scale: Option<i32>,
 ) -> Result<String, DecimalError> {
     // Parse to get sign and parts
     let value = value.trim();
@@ -356,28 +474,95 @@ fn truncate_decimal(
         integer_part
     };
 
-    // Apply scale constraint (truncate/round fractional part)
-    let (mut integer_part, fractional_part) = if let Some(s) = scale {
-        if (fractional_part.len() as u32) > s {
-            // Round the last digit
-            let truncated = &fractional_part[..s as usize];
-            let next_digit = fractional_part.chars().nth(s as usize).unwrap_or('0');
+    let scale_val = scale.unwrap_or(0);
 
-            if next_digit >= '5' {
-                // Round up - this may carry into integer part
+    // Handle negative scale (round to left of decimal point)
+    if scale_val < 0 {
+        let round_digits = (-scale_val) as usize;
+
+        // Remove all fractional digits when scale is negative
+        let mut int_str = integer_part.to_string();
+
+        if int_str.len() <= round_digits {
+            // Number is smaller than the rounding unit
+            // Round: if the number >= half the rounding unit, round up to the unit
+            let num_val: u64 = int_str.parse().unwrap_or(0);
+            let rounding_unit = 10u64.pow(round_digits as u32);
+            let half_unit = rounding_unit / 2;
+
+            let result = if num_val >= half_unit {
+                rounding_unit.to_string()
+            } else {
+                "0".to_string()
+            };
+
+            return if is_negative && result != "0" {
+                Ok(format!("-{}", result))
+            } else {
+                Ok(result)
+            };
+        }
+
+        // Round the integer part
+        let keep_len = int_str.len() - round_digits;
+        let keep_part = &int_str[..keep_len];
+        let round_part = &int_str[keep_len..];
+
+        // Check if we need to round up
+        let first_rounded_digit = round_part.chars().next().unwrap_or('0');
+        let mut result_int = keep_part.to_string();
+
+        if first_rounded_digit >= '5' {
+            result_int = add_one_to_integer(&result_int);
+        }
+
+        // Add trailing zeros
+        int_str = format!("{}{}", result_int, "0".repeat(round_digits));
+
+        // Apply precision constraint for negative scale
+        if let Some(p) = precision {
+            let max_significant = p as usize;
+            let significant_len = result_int.trim_start_matches('0').len();
+            if significant_len > max_significant && max_significant > 0 {
+                // Truncate from left (keep least significant digits)
+                let trimmed = &result_int[result_int.len().saturating_sub(max_significant)..];
+                int_str = format!("{}{}", trimmed, "0".repeat(round_digits));
+            }
+        }
+
+        return if is_negative && int_str != "0" {
+            Ok(format!("-{}", int_str))
+        } else {
+            Ok(int_str)
+        };
+    }
+
+    // Handle positive scale (normal case - digits after decimal)
+    let scale_usize = scale_val as usize;
+
+    // Apply scale constraint (truncate/round fractional part)
+    let (mut integer_part, fractional_part) = if fractional_part.len() > scale_usize {
+        // Round the last digit
+        let truncated = &fractional_part[..scale_usize];
+        let next_digit = fractional_part.chars().nth(scale_usize).unwrap_or('0');
+
+        if next_digit >= '5' {
+            // Round up - this may carry into integer part
+            if scale_usize == 0 {
+                // Rounding to integer
+                (add_one_to_integer(integer_part), String::new())
+            } else {
                 let rounded = round_up(truncated);
-                if rounded.len() > s as usize {
+                if rounded.len() > scale_usize {
                     // Carry into integer part
                     let new_int = add_one_to_integer(integer_part);
-                    (new_int, "0".repeat(s as usize))
+                    (new_int, "0".repeat(scale_usize))
                 } else {
                     (integer_part.to_string(), rounded)
                 }
-            } else {
-                (integer_part.to_string(), truncated.to_string())
             }
         } else {
-            (integer_part.to_string(), fractional_part.to_string())
+            (integer_part.to_string(), truncated.to_string())
         }
     } else {
         (integer_part.to_string(), fractional_part.to_string())
@@ -385,9 +570,8 @@ fn truncate_decimal(
 
     // Apply precision constraint
     if let Some(p) = precision {
-        let scale_val = scale.unwrap_or(0);
-        let max_integer_digits = if p > scale_val {
-            (p - scale_val) as usize
+        let max_integer_digits = if (p as i32) > scale_val {
+            (p as i32 - scale_val) as usize
         } else {
             0
         };
@@ -404,7 +588,11 @@ fn truncate_decimal(
     let result = if fractional_part.is_empty() || fractional_part.chars().all(|c| c == '0') {
         integer_part
     } else {
-        format!("{}.{}", integer_part, fractional_part.trim_end_matches('0'))
+        format!(
+            "{}.{}",
+            integer_part,
+            fractional_part.trim_end_matches('0')
+        )
     };
 
     if is_negative && result != "0" {
@@ -551,5 +739,225 @@ mod tests {
             "Expected <= 4 bytes, got {}",
             encoded.len()
         );
+    }
+
+    // ==================== Special Values Tests ====================
+
+    #[test]
+    fn test_special_value_encoding() {
+        // Test encoding special values
+        let pos_inf = encode_decimal("Infinity").unwrap();
+        assert_eq!(pos_inf, ENCODING_POS_INFINITY.to_vec());
+
+        let neg_inf = encode_decimal("-Infinity").unwrap();
+        assert_eq!(neg_inf, ENCODING_NEG_INFINITY.to_vec());
+
+        let nan = encode_decimal("NaN").unwrap();
+        assert_eq!(nan, ENCODING_NAN.to_vec());
+    }
+
+    #[test]
+    fn test_special_value_decoding() {
+        // Test decoding special values
+        assert_eq!(
+            decode_to_string(&ENCODING_POS_INFINITY).unwrap(),
+            "Infinity"
+        );
+        assert_eq!(
+            decode_to_string(&ENCODING_NEG_INFINITY).unwrap(),
+            "-Infinity"
+        );
+        assert_eq!(decode_to_string(&ENCODING_NAN).unwrap(), "NaN");
+    }
+
+    #[test]
+    fn test_special_value_parsing_variants() {
+        // Test various ways to write special values (case-insensitive)
+        let variants = vec![
+            ("infinity", "Infinity"),
+            ("Infinity", "Infinity"),
+            ("INFINITY", "Infinity"),
+            ("inf", "Infinity"),
+            ("Inf", "Infinity"),
+            ("+infinity", "Infinity"),
+            ("+inf", "Infinity"),
+            ("-infinity", "-Infinity"),
+            ("-inf", "-Infinity"),
+            ("-Infinity", "-Infinity"),
+            ("nan", "NaN"),
+            ("NaN", "NaN"),
+            ("NAN", "NaN"),
+            ("-nan", "NaN"), // PostgreSQL treats -NaN as NaN
+            ("+nan", "NaN"),
+        ];
+
+        for (input, expected) in variants {
+            let encoded = encode_decimal(input).unwrap();
+            let decoded = decode_to_string(&encoded).unwrap();
+            assert_eq!(decoded, expected, "Failed for input: {}", input);
+        }
+    }
+
+    #[test]
+    fn test_special_value_ordering() {
+        // PostgreSQL order: -Infinity < negatives < zero < positives < Infinity < NaN
+        let values = vec![
+            "-Infinity",
+            "-1000000",
+            "-1",
+            "-0.001",
+            "0",
+            "0.001",
+            "1",
+            "1000000",
+            "Infinity",
+            "NaN",
+        ];
+
+        let encoded: Vec<Vec<u8>> = values
+            .iter()
+            .map(|s| encode_decimal(s).unwrap())
+            .collect();
+
+        // Verify ordering
+        for i in 0..encoded.len() - 1 {
+            assert!(
+                encoded[i] < encoded[i + 1],
+                "Special value ordering failed: {} should be < {} (bytes: {:?} < {:?})",
+                values[i],
+                values[i + 1],
+                encoded[i],
+                encoded[i + 1]
+            );
+        }
+    }
+
+    #[test]
+    fn test_special_value_roundtrip() {
+        let values = vec!["Infinity", "-Infinity", "NaN"];
+
+        for s in values {
+            let encoded = encode_decimal(s).unwrap();
+            let decoded = decode_to_string(&encoded).unwrap();
+            let re_encoded = encode_decimal(&decoded).unwrap();
+            assert_eq!(encoded, re_encoded, "Special value roundtrip failed for {}", s);
+        }
+    }
+
+    #[test]
+    fn test_decode_special_value_helper() {
+        assert_eq!(
+            decode_special_value(&ENCODING_POS_INFINITY),
+            Some(SpecialValue::Infinity)
+        );
+        assert_eq!(
+            decode_special_value(&ENCODING_NEG_INFINITY),
+            Some(SpecialValue::NegInfinity)
+        );
+        assert_eq!(decode_special_value(&ENCODING_NAN), Some(SpecialValue::NaN));
+
+        // Regular values should return None
+        let regular = encode_decimal("123.456").unwrap();
+        assert_eq!(decode_special_value(&regular), None);
+
+        let zero = encode_decimal("0").unwrap();
+        assert_eq!(decode_special_value(&zero), None);
+    }
+
+    // ==================== Negative Scale Tests ====================
+
+    #[test]
+    fn test_negative_scale_basic() {
+        // Round to nearest 10
+        assert_eq!(truncate_decimal("123", None, Some(-1)).unwrap(), "120");
+        assert_eq!(truncate_decimal("125", None, Some(-1)).unwrap(), "130");
+        assert_eq!(truncate_decimal("124", None, Some(-1)).unwrap(), "120");
+
+        // Round to nearest 100
+        assert_eq!(truncate_decimal("1234", None, Some(-2)).unwrap(), "1200");
+        assert_eq!(truncate_decimal("1250", None, Some(-2)).unwrap(), "1300");
+        assert_eq!(truncate_decimal("1249", None, Some(-2)).unwrap(), "1200");
+
+        // Round to nearest 1000
+        assert_eq!(truncate_decimal("12345", None, Some(-3)).unwrap(), "12000");
+        assert_eq!(truncate_decimal("12500", None, Some(-3)).unwrap(), "13000");
+    }
+
+    #[test]
+    fn test_negative_scale_small_numbers() {
+        // When number is smaller than rounding unit
+        assert_eq!(truncate_decimal("499", None, Some(-3)).unwrap(), "0");
+        assert_eq!(truncate_decimal("500", None, Some(-3)).unwrap(), "1000");
+        assert_eq!(truncate_decimal("999", None, Some(-3)).unwrap(), "1000");
+
+        assert_eq!(truncate_decimal("49", None, Some(-2)).unwrap(), "0");
+        assert_eq!(truncate_decimal("50", None, Some(-2)).unwrap(), "100");
+    }
+
+    #[test]
+    fn test_negative_scale_with_precision() {
+        // NUMERIC(2, -3): max 2 significant digits, round to nearest 1000
+        assert_eq!(
+            truncate_decimal("12345", Some(2), Some(-3)).unwrap(),
+            "12000"
+        );
+        // 99999 rounded to nearest 1000 = 100000
+        // "100" significant part exceeds precision 2, truncated from left to "00"
+        // Final: "00" + "000" trailing zeros = "00000"
+        // Note: PostgreSQL would error here; we truncate instead
+        assert_eq!(
+            truncate_decimal("99999", Some(2), Some(-3)).unwrap(),
+            "00000"
+        );
+    }
+
+    #[test]
+    fn test_negative_scale_negative_numbers() {
+        assert_eq!(truncate_decimal("-123", None, Some(-1)).unwrap(), "-120");
+        assert_eq!(truncate_decimal("-125", None, Some(-1)).unwrap(), "-130");
+        assert_eq!(truncate_decimal("-1234", None, Some(-2)).unwrap(), "-1200");
+    }
+
+    #[test]
+    fn test_negative_scale_with_decimal_input() {
+        // Fractional part is ignored with negative scale
+        assert_eq!(truncate_decimal("123.456", None, Some(-1)).unwrap(), "120");
+        assert_eq!(
+            truncate_decimal("1234.999", None, Some(-2)).unwrap(),
+            "1200"
+        );
+    }
+
+    #[test]
+    fn test_negative_scale_encoding_ordering() {
+        // Verify ordering is preserved with negative scale rounding
+        let values = vec!["-1000", "-100", "0", "100", "1000"];
+
+        let encoded: Vec<Vec<u8>> = values
+            .iter()
+            .map(|s| encode_decimal_with_constraints(s, None, Some(-2)).unwrap())
+            .collect();
+
+        for i in 0..encoded.len() - 1 {
+            assert!(
+                encoded[i] < encoded[i + 1],
+                "Negative scale ordering failed: {} should be < {}",
+                values[i],
+                values[i + 1]
+            );
+        }
+    }
+
+    #[test]
+    fn test_special_values_ignore_precision_scale() {
+        // Special values should pass through unchanged regardless of precision/scale
+        let inf = encode_decimal_with_constraints("Infinity", Some(5), Some(2)).unwrap();
+        assert_eq!(inf, ENCODING_POS_INFINITY.to_vec());
+
+        let neg_inf = encode_decimal_with_constraints("-Infinity", Some(5), Some(2)).unwrap();
+        assert_eq!(neg_inf, ENCODING_NEG_INFINITY.to_vec());
+
+        let nan = encode_decimal_with_constraints("NaN", Some(5), Some(2)).unwrap();
+        assert_eq!(nan, ENCODING_NAN.to_vec());
     }
 }
