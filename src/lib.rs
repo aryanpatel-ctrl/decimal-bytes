@@ -846,6 +846,14 @@ mod tests {
         let result = Decimal::from_str("12abc");
         assert!(result.is_err());
 
+        // Missing exponent after 'e'
+        let result = Decimal::from_str("1e");
+        assert!(result.is_err());
+        assert!(matches!(
+            result.unwrap_err(),
+            DecimalError::InvalidFormat(_)
+        ));
+
         // Invalid exponent (non-numeric after 'e')
         let result = Decimal::from_str("1eabc");
         assert!(result.is_err());

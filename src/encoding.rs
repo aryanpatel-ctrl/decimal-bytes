@@ -231,6 +231,7 @@ fn parse_decimal(value: &str) -> Result<(bool, Vec<u8>, i32), DecimalError> {
     let mut integer_part = String::new();
     let mut fractional_part = String::new();
     let mut seen_decimal = false;
+    let mut seen_exponent_marker = false;
 
     while let Some(&c) = chars.peek() {
         if c == '.' {
@@ -249,6 +250,7 @@ fn parse_decimal(value: &str) -> Result<(bool, Vec<u8>, i32), DecimalError> {
             }
             chars.next();
         } else if c == 'e' || c == 'E' {
+            seen_exponent_marker = true;
             chars.next();
             break;
         } else {
@@ -259,9 +261,14 @@ fn parse_decimal(value: &str) -> Result<(bool, Vec<u8>, i32), DecimalError> {
         }
     }
 
-    // Parse optional exponent
+    // Parse exponent (required if 'e' or 'E' was seen)
     let mut exp_offset: i32 = 0;
-    if chars.peek().is_some() {
+    if seen_exponent_marker {
+        if chars.peek().is_none() {
+            return Err(DecimalError::InvalidFormat(
+                "Missing exponent after 'e'".to_string(),
+            ));
+        }
         let exp_str: String = chars.collect();
         exp_offset = exp_str
             .parse()
