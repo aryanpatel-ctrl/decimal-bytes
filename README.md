@@ -1,5 +1,10 @@
 # decimal-bytes
 
+[![CI](https://github.com/paradedb/decimal-bytes/actions/workflows/ci.yml/badge.svg)](https://github.com/paradedb/decimal-bytes/actions/workflows/ci.yml)
+[![Crates.io](https://img.shields.io/crates/v/decimal-bytes.svg)](https://crates.io/crates/decimal-bytes)
+[![Documentation](https://docs.rs/decimal-bytes/badge.svg)](https://docs.rs/decimal-bytes)
+[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](https://opensource.org/licenses/MIT)
+
 Arbitrary precision decimals with lexicographically sortable byte encoding.
 
 ## Overview
