@@ -588,11 +588,7 @@ fn truncate_decimal(
     let result = if fractional_part.is_empty() || fractional_part.chars().all(|c| c == '0') {
         integer_part
     } else {
-        format!(
-            "{}.{}",
-            integer_part,
-            fractional_part.trim_end_matches('0')
-        )
+        format!("{}.{}", integer_part, fractional_part.trim_end_matches('0'))
     };
 
     if is_negative && result != "0" {
@@ -686,10 +682,7 @@ mod tests {
             "1000",
         ];
 
-        let encoded: Vec<Vec<u8>> = values
-            .iter()
-            .map(|s| encode_decimal(s).unwrap())
-            .collect();
+        let encoded: Vec<Vec<u8>> = values.iter().map(|s| encode_decimal(s).unwrap()).collect();
 
         // Verify encoding preserves order
         for i in 0..encoded.len() - 1 {
@@ -716,8 +709,14 @@ mod tests {
 
     #[test]
     fn test_truncate_scale() {
-        assert_eq!(truncate_decimal("123.456", None, Some(2)).unwrap(), "123.46");
-        assert_eq!(truncate_decimal("123.454", None, Some(2)).unwrap(), "123.45");
+        assert_eq!(
+            truncate_decimal("123.456", None, Some(2)).unwrap(),
+            "123.46"
+        );
+        assert_eq!(
+            truncate_decimal("123.454", None, Some(2)).unwrap(),
+            "123.45"
+        );
         assert_eq!(truncate_decimal("123.995", None, Some(2)).unwrap(), "124");
         assert_eq!(truncate_decimal("9.999", None, Some(2)).unwrap(), "10");
     }
@@ -814,10 +813,7 @@ mod tests {
             "NaN",
         ];
 
-        let encoded: Vec<Vec<u8>> = values
-            .iter()
-            .map(|s| encode_decimal(s).unwrap())
-            .collect();
+        let encoded: Vec<Vec<u8>> = values.iter().map(|s| encode_decimal(s).unwrap()).collect();
 
         // Verify ordering
         for i in 0..encoded.len() - 1 {
@@ -840,7 +836,11 @@ mod tests {
             let encoded = encode_decimal(s).unwrap();
             let decoded = decode_to_string(&encoded).unwrap();
             let re_encoded = encode_decimal(&decoded).unwrap();
-            assert_eq!(encoded, re_encoded, "Special value roundtrip failed for {}", s);
+            assert_eq!(
+                encoded, re_encoded,
+                "Special value roundtrip failed for {}",
+                s
+            );
         }
     }
 
