@@ -1,0 +1,20 @@
+[package]
+name = "decimal-bytes"
+version = "0.1.0"
+authors = ["ParadeDB <support@paradedb.com>"]
+license = "MIT"
+categories = ["encoding", "data-structures"]
+description = "Arbitrary precision decimals with lexicographically sortable byte encoding"
+repository = "https://github.com/paradedb/decimal-bytes"
+homepage = "https://github.com/paradedb/decimal-bytes"
+keywords = ["decimal", "numeric", "encoding", "sortable"]
+edition = "2021"
+rust-version = "1.85"
+
+[dependencies]
+serde = { version = "1.0", features = ["derive"] }
+thiserror = "2.0"
+
+[dev-dependencies]
+proptest = "1.0"
+serde_json = "1.0"
