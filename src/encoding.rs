@@ -275,15 +275,19 @@ fn parse_decimal(value: &str) -> Result<(bool, Vec<u8>, i32), DecimalError> {
 
     // If only fractional part, integer part is "0"
     if integer_part.is_empty() {
-        integer_part = "0".to_string();
+        integer_part.push('0');
     }
 
-    // Combine all digits
-    let combined = format!("{}{}", integer_part, fractional_part);
+    // Remember where the decimal point was before combining
+    let decimal_position = integer_part.len();
+
+    // Combine all digits by appending fractional part (avoids extra allocation)
+    integer_part.push_str(&fractional_part);
+    let all_digits = integer_part;
 
     // Find the first and last non-zero digit positions
-    let first_nonzero = combined.chars().position(|c| c != '0');
-    let last_nonzero = combined.chars().rev().position(|c| c != '0');
+    let first_nonzero = all_digits.chars().position(|c| c != '0');
+    let last_nonzero = all_digits.chars().rev().position(|c| c != '0');
 
     // If all zeros, return zero
     if first_nonzero.is_none() {
@@ -291,13 +295,12 @@ fn parse_decimal(value: &str) -> Result<(bool, Vec<u8>, i32), DecimalError> {
     }
 
     let first_nonzero = first_nonzero.unwrap();
-    let last_nonzero = combined.len() - 1 - last_nonzero.unwrap();
+    let last_nonzero = all_digits.len() - 1 - last_nonzero.unwrap();
 
     // Extract the significant digits
-    let significant = &combined[first_nonzero..=last_nonzero];
+    let significant = &all_digits[first_nonzero..=last_nonzero];
 
     // Calculate the exponent
-    let decimal_position = integer_part.len();
     let exponent = (decimal_position as i32) - (first_nonzero as i32) + exp_offset;
 
     // Convert significant digits to bytes
