@@ -354,6 +354,120 @@ impl Default for Decimal {
     }
 }
 
+// ============================================================================
+// Optional: rust_decimal interop (enabled with "rust_decimal" feature)
+// ============================================================================
+
+#[cfg(feature = "rust_decimal")]
+mod rust_decimal_interop {
+    use super::{Decimal, DecimalError};
+
+    impl TryFrom<rust_decimal::Decimal> for Decimal {
+        type Error = DecimalError;
+
+        /// Converts a `rust_decimal::Decimal` to a `decimal_bytes::Decimal`.
+        ///
+        /// # Example
+        ///
+        /// ```ignore
+        /// use rust_decimal::Decimal as RustDecimal;
+        /// use decimal_bytes::Decimal;
+        ///
+        /// let rd = RustDecimal::new(12345, 2); // 123.45
+        /// let d: Decimal = rd.try_into().unwrap();
+        /// assert_eq!(d.to_string(), "123.45");
+        /// ```
+        fn try_from(value: rust_decimal::Decimal) -> Result<Self, Self::Error> {
+            Decimal::from_str(&value.to_string())
+        }
+    }
+
+    impl TryFrom<&Decimal> for rust_decimal::Decimal {
+        type Error = rust_decimal::Error;
+
+        /// Converts a `decimal_bytes::Decimal` to a `rust_decimal::Decimal`.
+        ///
+        /// Note: This may fail if the decimal exceeds rust_decimal's precision limits
+        /// (28-29 significant digits) or if it's a special value (Infinity, NaN).
+        ///
+        /// # Example
+        ///
+        /// ```ignore
+        /// use rust_decimal::Decimal as RustDecimal;
+        /// use decimal_bytes::Decimal;
+        ///
+        /// let d = Decimal::from_str("123.45").unwrap();
+        /// let rd: RustDecimal = (&d).try_into().unwrap();
+        /// assert_eq!(rd.to_string(), "123.45");
+        /// ```
+        fn try_from(value: &Decimal) -> Result<Self, Self::Error> {
+            use std::str::FromStr;
+            rust_decimal::Decimal::from_str(&value.to_string())
+        }
+    }
+
+    impl TryFrom<Decimal> for rust_decimal::Decimal {
+        type Error = rust_decimal::Error;
+
+        fn try_from(value: Decimal) -> Result<Self, Self::Error> {
+            rust_decimal::Decimal::try_from(&value)
+        }
+    }
+}
+
+// The rust_decimal_interop module only contains trait implementations,
+// so there's nothing to re-export. The TryFrom impls are automatically available.
+
+// ============================================================================
+// Optional: bigdecimal interop (enabled with "bigdecimal" feature)
+// ============================================================================
+
+#[cfg(feature = "bigdecimal")]
+mod bigdecimal_interop {
+    use super::{Decimal, DecimalError};
+
+    impl TryFrom<bigdecimal::BigDecimal> for Decimal {
+        type Error = DecimalError;
+
+        /// Converts a `bigdecimal::BigDecimal` to a `decimal_bytes::Decimal`.
+        fn try_from(value: bigdecimal::BigDecimal) -> Result<Self, Self::Error> {
+            Decimal::from_str(&value.to_string())
+        }
+    }
+
+    impl TryFrom<&bigdecimal::BigDecimal> for Decimal {
+        type Error = DecimalError;
+
+        fn try_from(value: &bigdecimal::BigDecimal) -> Result<Self, Self::Error> {
+            Decimal::from_str(&value.to_string())
+        }
+    }
+
+    impl TryFrom<&Decimal> for bigdecimal::BigDecimal {
+        type Error = bigdecimal::ParseBigDecimalError;
+
+        /// Converts a `decimal_bytes::Decimal` to a `bigdecimal::BigDecimal`.
+        ///
+        /// Note: This may fail for special values (Infinity, NaN) which
+        /// bigdecimal doesn't support.
+        fn try_from(value: &Decimal) -> Result<Self, Self::Error> {
+            use std::str::FromStr;
+            bigdecimal::BigDecimal::from_str(&value.to_string())
+        }
+    }
+
+    impl TryFrom<Decimal> for bigdecimal::BigDecimal {
+        type Error = bigdecimal::ParseBigDecimalError;
+
+        fn try_from(value: Decimal) -> Result<Self, Self::Error> {
+            bigdecimal::BigDecimal::try_from(&value)
+        }
+    }
+}
+
+// The bigdecimal_interop module only contains trait implementations,
+// so there's nothing to re-export. The TryFrom impls are automatically available.
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -640,5 +754,102 @@ mod tests {
         // NUMERIC(2, -3): 2 significant digits, round to nearest 1000
         let d = Decimal::with_precision_scale("12345", Some(2), Some(-3)).unwrap();
         assert_eq!(d.to_string(), "12000");
+    }
+
+    // ==================== rust_decimal Interop Tests ====================
+
+    #[cfg(feature = "rust_decimal")]
+    mod rust_decimal_tests {
+        use super::*;
+
+        #[test]
+        fn test_from_rust_decimal() {
+            use rust_decimal::Decimal as RustDecimal;
+
+            let rd = RustDecimal::new(12345, 2); // 123.45
+            let d: Decimal = rd.try_into().unwrap();
+            assert_eq!(d.to_string(), "123.45");
+        }
+
+        #[test]
+        fn test_to_rust_decimal() {
+            use rust_decimal::Decimal as RustDecimal;
+
+            let d = Decimal::from_str("123.45").unwrap();
+            let rd: RustDecimal = (&d).try_into().unwrap();
+            assert_eq!(rd.to_string(), "123.45");
+        }
+
+        #[test]
+        fn test_rust_decimal_roundtrip() {
+            use rust_decimal::Decimal as RustDecimal;
+
+            let values = vec!["0", "1", "-1", "123.456", "-999.999", "0.001"];
+
+            for s in values {
+                let d = Decimal::from_str(s).unwrap();
+                let rd: RustDecimal = (&d).try_into().unwrap();
+                let d2: Decimal = rd.try_into().unwrap();
+                assert_eq!(d, d2, "Roundtrip failed for {}", s);
+            }
+        }
+
+        #[test]
+        fn test_rust_decimal_arithmetic() {
+            use rust_decimal::Decimal as RustDecimal;
+
+            // Start with decimal-bytes values
+            let a = Decimal::from_str("100.50").unwrap();
+            let b = Decimal::from_str("25.25").unwrap();
+
+            // Convert to rust_decimal for arithmetic
+            let ra: RustDecimal = (&a).try_into().unwrap();
+            let rb: RustDecimal = (&b).try_into().unwrap();
+            let sum = ra + rb;
+
+            // Convert back to decimal-bytes for storage
+            let result: Decimal = sum.try_into().unwrap();
+            assert_eq!(result.to_string(), "125.75");
+        }
+    }
+
+    // ==================== bigdecimal Interop Tests ====================
+
+    #[cfg(feature = "bigdecimal")]
+    mod bigdecimal_tests {
+        use super::*;
+
+        #[test]
+        fn test_from_bigdecimal() {
+            use bigdecimal::BigDecimal;
+            use std::str::FromStr;
+
+            let bd = BigDecimal::from_str("123.45").unwrap();
+            let d: Decimal = bd.try_into().unwrap();
+            assert_eq!(d.to_string(), "123.45");
+        }
+
+        #[test]
+        fn test_to_bigdecimal() {
+            use bigdecimal::BigDecimal;
+
+            let d = Decimal::from_str("123.45").unwrap();
+            let bd: BigDecimal = (&d).try_into().unwrap();
+            assert_eq!(bd.to_string(), "123.45");
+        }
+
+        #[test]
+        fn test_bigdecimal_roundtrip() {
+            use bigdecimal::BigDecimal;
+
+            let values = vec!["0", "1", "-1", "123.456", "-999.999", "0.001"];
+
+            for s in values {
+                let d = Decimal::from_str(s).unwrap();
+                let bd: BigDecimal = (&d).try_into().unwrap();
+                let d2: Decimal = bd.try_into().unwrap();
+                assert_eq!(d, d2, "Roundtrip failed for {}", s);
+            }
+        }
     }
 }

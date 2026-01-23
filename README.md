@@ -6,6 +6,8 @@ Arbitrary precision decimals with lexicographically sortable byte encoding.
 
 This crate provides a `Decimal` type that stores decimal numbers as bytes in a format that preserves numerical ordering when compared lexicographically. This makes it ideal for use in databases and search engines where efficient range queries on decimal values are needed.
 
+**Why not use `rust_decimal` or `bigdecimal`?** Those libraries are excellent for arithmetic, but their byte representations are not lexicographically sortable. You cannot compare their serialized bytes to determine numerical order - you must deserialize first. `decimal-bytes` solves this by providing a byte encoding where `bytes(a) < bytes(b)` if and only if `a < b` numerically.
+
 ## Features
 
 - **Bytes-first storage**: The primary representation is a compact byte array - no constant conversions
@@ -109,6 +111,54 @@ The lexicographic byte order matches the PostgreSQL NUMERIC sort order:
 ```
 
 This enables efficient range queries in sorted key-value stores without decoding.
+
+## Arithmetic Operations
+
+This library focuses on storage and comparison, not arithmetic. Existing Rust decimal libraries (`rust_decimal`, `bigdecimal`) provide arithmetic but their byte representations are **not lexicographically sortable** - you cannot compare their serialized bytes to determine numerical order. That's the gap `decimal-bytes` fills: efficient storage with byte-level ordering for databases and search engines.
+
+For calculations, use an established decimal library and convert:
+
+### With `rust_decimal` (recommended for most use cases)
+
+```toml
+[dependencies]
+decimal-bytes = { version = "0.1", features = ["rust_decimal"] }
+```
+
+```rust
+use rust_decimal::Decimal as RustDecimal;
+use decimal_bytes::Decimal;
+
+// Convert from rust_decimal for storage
+let rd = RustDecimal::new(12345, 2); // 123.45
+let stored: Decimal = rd.try_into().unwrap();
+
+// Do arithmetic with rust_decimal
+let a: RustDecimal = (&stored).try_into().unwrap();
+let b = RustDecimal::new(1000, 2); // 10.00
+let sum = a + b; // 133.45
+
+// Convert back for storage
+let result: Decimal = sum.try_into().unwrap();
+```
+
+### With `bigdecimal` (for arbitrary precision arithmetic)
+
+```toml
+[dependencies]
+decimal-bytes = { version = "0.1", features = ["bigdecimal"] }
+```
+
+```rust
+use bigdecimal::BigDecimal;
+use decimal_bytes::Decimal;
+use std::str::FromStr;
+
+// Convert between types
+let bd = BigDecimal::from_str("123.456789012345678901234567890").unwrap();
+let stored: Decimal = bd.try_into().unwrap();
+let restored: BigDecimal = (&stored).try_into().unwrap();
+```
 
 ## License
 

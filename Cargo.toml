@@ -11,9 +11,20 @@ keywords = ["decimal", "numeric", "encoding", "sortable"]
 edition = "2021"
 rust-version = "1.85"
 
+[features]
+default = []
+# Enable conversion to/from rust_decimal::Decimal
+rust_decimal = ["dep:rust_decimal"]
+# Enable conversion to/from bigdecimal::BigDecimal  
+bigdecimal = ["dep:bigdecimal"]
+
 [dependencies]
 serde = { version = "1.0", features = ["derive"] }
 thiserror = "2.0"
+
+# Optional dependencies for interop with other decimal libraries
+rust_decimal = { version = "1.36", optional = true }
+bigdecimal = { version = "0.4", optional = true }
 
 [dev-dependencies]
 proptest = "1.0"
