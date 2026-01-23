@@ -85,13 +85,9 @@ fn bench_comparison(c: &mut Criterion) {
 fn bench_special_values(c: &mut Criterion) {
     let mut group = c.benchmark_group("special_values");
 
-    group.bench_function("create_infinity", |b| {
-        b.iter(|| Decimal::infinity())
-    });
+    group.bench_function("create_infinity", |b| b.iter(|| Decimal::infinity()));
 
-    group.bench_function("create_nan", |b| {
-        b.iter(|| Decimal::nan())
-    });
+    group.bench_function("create_nan", |b| b.iter(|| Decimal::nan()));
 
     group.bench_function("parse_infinity", |b| {
         b.iter(|| Decimal::from_str(black_box("Infinity")).unwrap())
@@ -104,13 +100,9 @@ fn bench_special_values(c: &mut Criterion) {
     let inf = Decimal::infinity();
     let nan = Decimal::nan();
 
-    group.bench_function("is_infinity", |b| {
-        b.iter(|| black_box(&inf).is_infinity())
-    });
+    group.bench_function("is_infinity", |b| b.iter(|| black_box(&inf).is_infinity()));
 
-    group.bench_function("is_nan", |b| {
-        b.iter(|| black_box(&nan).is_nan())
-    });
+    group.bench_function("is_nan", |b| b.iter(|| black_box(&nan).is_nan()));
 
     group.finish();
 }
@@ -125,9 +117,7 @@ fn bench_precision_scale(c: &mut Criterion) {
     });
 
     group.bench_function("negative_scale", |b| {
-        b.iter(|| {
-            Decimal::with_precision_scale(black_box("123456"), Some(10), Some(-3)).unwrap()
-        })
+        b.iter(|| Decimal::with_precision_scale(black_box("123456"), Some(10), Some(-3)).unwrap())
     });
 
     group.finish();
