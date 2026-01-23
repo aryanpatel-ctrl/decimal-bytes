@@ -170,6 +170,36 @@ jobs:
 
       - name: Generate coverage summary
         run: |
-          echo "## Code Coverage Summary" >> $GITHUB_STEP_SUMMARY
+          # Run coverage and capture output
+          COVERAGE_OUTPUT=$(cargo llvm-cov --all-features 2>&1)
+          
+          # Extract the summary line (TOTAL row)
+          TOTAL_LINE=$(echo "$COVERAGE_OUTPUT" | grep "^TOTAL")
+          
+          # Parse coverage percentages
+          REGION_COV=$(echo "$TOTAL_LINE" | awk '{print $4}')
+          FUNC_COV=$(echo "$TOTAL_LINE" | awk '{print $7}')
+          LINE_COV=$(echo "$TOTAL_LINE" | awk '{print $10}')
+          
+          # Get file-level details
+          ENCODING_LINE=$(echo "$COVERAGE_OUTPUT" | grep "encoding.rs")
+          LIB_LINE=$(echo "$COVERAGE_OUTPUT" | grep "lib.rs")
+          
+          ENCODING_COV=$(echo "$ENCODING_LINE" | awk '{print $10}')
+          LIB_COV=$(echo "$LIB_LINE" | awk '{print $10}')
+          
+          # Write formatted summary
+          echo "## 📊 Code Coverage Summary" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
-          cargo llvm-cov --all-features --text >> $GITHUB_STEP_SUMMARY
+          echo "| Metric | Coverage |" >> $GITHUB_STEP_SUMMARY
+          echo "|--------|----------|" >> $GITHUB_STEP_SUMMARY
+          echo "| **Lines** | $LINE_COV |" >> $GITHUB_STEP_SUMMARY
+          echo "| **Functions** | $FUNC_COV |" >> $GITHUB_STEP_SUMMARY
+          echo "| **Regions** | $REGION_COV |" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "### Per-File Coverage" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "| File | Line Coverage |" >> $GITHUB_STEP_SUMMARY
+          echo "|------|---------------|" >> $GITHUB_STEP_SUMMARY
+          echo "| \`encoding.rs\` | $ENCODING_COV |" >> $GITHUB_STEP_SUMMARY
+          echo "| \`lib.rs\` | $LIB_COV |" >> $GITHUB_STEP_SUMMARY
