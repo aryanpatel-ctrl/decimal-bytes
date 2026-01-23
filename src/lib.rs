@@ -830,6 +830,202 @@ mod tests {
         assert_eq!(d.to_string(), "12000");
     }
 
+    // ==================== Error Handling Tests ====================
+
+    #[test]
+    fn test_invalid_format_errors() {
+        // Multiple decimal points
+        let result = Decimal::from_str("1.2.3");
+        assert!(result.is_err());
+        assert!(matches!(
+            result.unwrap_err(),
+            DecimalError::InvalidFormat(_)
+        ));
+
+        // Invalid characters
+        let result = Decimal::from_str("12abc");
+        assert!(result.is_err());
+
+        // Invalid exponent (non-numeric after 'e')
+        let result = Decimal::from_str("1eabc");
+        assert!(result.is_err());
+
+        // Empty string gives zero
+        let d = Decimal::from_str("").unwrap();
+        assert!(d.is_zero());
+
+        // Just a sign with no digits
+        let result = Decimal::from_str("-");
+        assert!(result.is_ok()); // Parses as zero
+    }
+
+    #[test]
+    fn test_leading_plus_sign() {
+        let d = Decimal::from_str("+123.456").unwrap();
+        assert_eq!(d.to_string(), "123.456");
+        assert!(d.is_positive());
+    }
+
+    #[test]
+    fn test_scientific_notation() {
+        let d = Decimal::from_str("1.5e10").unwrap();
+        assert_eq!(d.to_string(), "15000000000");
+
+        let d = Decimal::from_str("1.5E-3").unwrap();
+        assert_eq!(d.to_string(), "0.0015");
+
+        let d = Decimal::from_str("1e+5").unwrap();
+        assert_eq!(d.to_string(), "100000");
+    }
+
+    #[test]
+    fn test_leading_decimal_point() {
+        // ".5" should be parsed as "0.5"
+        let d = Decimal::from_str(".5").unwrap();
+        assert_eq!(d.to_string(), "0.5");
+
+        let d = Decimal::from_str("-.25").unwrap();
+        assert_eq!(d.to_string(), "-0.25");
+    }
+
+    #[test]
+    fn test_trailing_zeros() {
+        let d = Decimal::from_str("100").unwrap();
+        assert_eq!(d.to_string(), "100");
+
+        let d = Decimal::from_str("1.500").unwrap();
+        assert_eq!(d.to_string(), "1.5");
+    }
+
+    #[test]
+    fn test_leading_zeros() {
+        let d = Decimal::from_str("007").unwrap();
+        assert_eq!(d.to_string(), "7");
+
+        let d = Decimal::from_str("00.123").unwrap();
+        assert_eq!(d.to_string(), "0.123");
+    }
+
+    // ==================== Additional Trait Tests ====================
+
+    #[test]
+    fn test_into_bytes() {
+        let d = Decimal::from_str("123.456").unwrap();
+        let bytes_ref = d.as_bytes().to_vec();
+        let bytes_owned = d.into_bytes();
+        assert_eq!(bytes_ref, bytes_owned);
+    }
+
+    #[test]
+    fn test_clone() {
+        let d1 = Decimal::from_str("123.456").unwrap();
+        let d2 = d1.clone();
+        assert_eq!(d1, d2);
+        assert_eq!(d1.as_bytes(), d2.as_bytes());
+    }
+
+    #[test]
+    fn test_hash() {
+        use std::collections::HashSet;
+
+        let mut set = HashSet::new();
+        set.insert(Decimal::from_str("123.456").unwrap());
+        set.insert(Decimal::from_str("123.456").unwrap()); // Duplicate
+        set.insert(Decimal::from_str("789.012").unwrap());
+
+        assert_eq!(set.len(), 2);
+        assert!(set.contains(&Decimal::from_str("123.456").unwrap()));
+    }
+
+    #[test]
+    fn test_debug_format() {
+        let d = Decimal::from_str("123.456").unwrap();
+        let debug_str = format!("{:?}", d);
+        assert!(debug_str.contains("Decimal"));
+        assert!(debug_str.contains("123.456"));
+    }
+
+    #[test]
+    fn test_ord_trait() {
+        use std::cmp::Ordering;
+
+        let a = Decimal::from_str("1").unwrap();
+        let b = Decimal::from_str("2").unwrap();
+        let c = Decimal::from_str("1").unwrap();
+
+        assert_eq!(a.cmp(&b), Ordering::Less);
+        assert_eq!(b.cmp(&a), Ordering::Greater);
+        assert_eq!(a.cmp(&c), Ordering::Equal);
+    }
+
+    #[test]
+    fn test_from_bytes_invalid() {
+        // Empty bytes should fail
+        let result = Decimal::from_bytes(&[]);
+        assert!(result.is_err());
+
+        // Single invalid sign byte
+        let result = Decimal::from_bytes(&[0x00]);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_deserialize_from_string_number() {
+        // JSON string numbers deserialize correctly
+        let d: Decimal = serde_json::from_str("\"42\"").unwrap();
+        assert_eq!(d.to_string(), "42");
+
+        let d: Decimal = serde_json::from_str("\"-100\"").unwrap();
+        assert_eq!(d.to_string(), "-100");
+
+        let d: Decimal = serde_json::from_str("\"1.5e10\"").unwrap();
+        assert_eq!(d.to_string(), "15000000000");
+    }
+
+    #[test]
+    fn test_from_various_integer_types() {
+        assert_eq!(Decimal::from(0i32).to_string(), "0");
+        assert_eq!(Decimal::from(i32::MAX).to_string(), "2147483647");
+        assert_eq!(Decimal::from(i32::MIN).to_string(), "-2147483648");
+        assert_eq!(Decimal::from(i64::MAX).to_string(), "9223372036854775807");
+        assert_eq!(Decimal::from(i64::MIN).to_string(), "-9223372036854775808");
+    }
+
+    #[test]
+    fn test_precision_overflow() {
+        // Exponent too large
+        let result = Decimal::from_str("1e20000");
+        assert!(result.is_err());
+        assert!(matches!(
+            result.unwrap_err(),
+            DecimalError::PrecisionOverflow
+        ));
+
+        // Exponent too small (negative)
+        let result = Decimal::from_str("1e-20000");
+        assert!(result.is_err());
+        assert!(matches!(
+            result.unwrap_err(),
+            DecimalError::PrecisionOverflow
+        ));
+    }
+
+    #[test]
+    fn test_all_zeros_variations() {
+        let d = Decimal::from_str("0").unwrap();
+        assert!(d.is_zero());
+
+        let d = Decimal::from_str("0.0").unwrap();
+        assert!(d.is_zero());
+
+        let d = Decimal::from_str("00.00").unwrap();
+        assert!(d.is_zero());
+
+        let d = Decimal::from_str("-0").unwrap();
+        assert!(d.is_zero());
+        // Note: -0 normalizes to 0
+    }
+
     // ==================== rust_decimal Interop Tests ====================
 
     #[cfg(feature = "rust_decimal")]
@@ -885,6 +1081,31 @@ mod tests {
             let result: Decimal = sum.try_into().unwrap();
             assert_eq!(result.to_string(), "125.75");
         }
+
+        #[test]
+        fn test_rust_decimal_from_owned() {
+            use rust_decimal::Decimal as RustDecimal;
+
+            // Test TryFrom<Decimal> (owned) for RustDecimal
+            let d = Decimal::from_str("456.789").unwrap();
+            let rd: RustDecimal = d.try_into().unwrap();
+            assert_eq!(rd.to_string(), "456.789");
+        }
+
+        #[test]
+        fn test_rust_decimal_special_values_fail() {
+            use rust_decimal::Decimal as RustDecimal;
+
+            // Infinity cannot convert to rust_decimal
+            let inf = Decimal::infinity();
+            let result: Result<RustDecimal, _> = (&inf).try_into();
+            assert!(result.is_err());
+
+            // NaN cannot convert to rust_decimal
+            let nan = Decimal::nan();
+            let result: Result<RustDecimal, _> = (&nan).try_into();
+            assert!(result.is_err());
+        }
     }
 
     // ==================== bigdecimal Interop Tests ====================
@@ -924,6 +1145,42 @@ mod tests {
                 let d2: Decimal = bd.try_into().unwrap();
                 assert_eq!(d, d2, "Roundtrip failed for {}", s);
             }
+        }
+
+        #[test]
+        fn test_bigdecimal_from_owned() {
+            use bigdecimal::BigDecimal;
+
+            // Test TryFrom<Decimal> (owned) for BigDecimal
+            let d = Decimal::from_str("456.789").unwrap();
+            let bd: BigDecimal = d.try_into().unwrap();
+            assert_eq!(bd.to_string(), "456.789");
+        }
+
+        #[test]
+        fn test_bigdecimal_from_ref() {
+            use bigdecimal::BigDecimal;
+            use std::str::FromStr;
+
+            // Test TryFrom<&BigDecimal> for Decimal
+            let bd = BigDecimal::from_str("789.012").unwrap();
+            let d: Decimal = (&bd).try_into().unwrap();
+            assert_eq!(d.to_string(), "789.012");
+        }
+
+        #[test]
+        fn test_bigdecimal_special_values_fail() {
+            use bigdecimal::BigDecimal;
+
+            // Infinity cannot convert to BigDecimal
+            let inf = Decimal::infinity();
+            let result: Result<BigDecimal, _> = (&inf).try_into();
+            assert!(result.is_err());
+
+            // NaN cannot convert to BigDecimal
+            let nan = Decimal::nan();
+            let result: Result<BigDecimal, _> = (&nan).try_into();
+            assert!(result.is_err());
         }
     }
 }
