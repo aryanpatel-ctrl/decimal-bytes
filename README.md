@@ -144,6 +144,33 @@ The lexicographic byte order matches the PostgreSQL NUMERIC sort order:
 
 This enables efficient range queries in sorted key-value stores without decoding.
 
+## Performance
+
+Benchmarks measured on Apple M1 Pro. Run `cargo bench` to reproduce.
+
+### Parsing & Encoding
+
+| Operation | Small (2 digits) | Medium (9 digits) | Large (30+ digits) |
+|-----------|------------------|-------------------|-------------------|
+| `from_str` | ~88 ns | ~140 ns | ~300 ns |
+| `to_string` | ~71 ns | ~96 ns | ~175 ns |
+| `from_bytes` | ~58 ns | ~96 ns | ~260 ns |
+| `from_bytes_unchecked` | ~15 ns | ~15 ns | ~15 ns |
+
+### Comparisons
+
+| Operation | Time |
+|-----------|------|
+| Byte comparison (`as_bytes() < as_bytes()`) | ~4 ns |
+| `Decimal` comparison (`<`, `==`) | ~4-5 ns |
+
+### Batch Operations
+
+| Operation | Time |
+|-----------|------|
+| Parse 10 decimals | ~1.2 µs (~120 ns/decimal) |
+| Sort 10 decimals | ~360 ns (~36 ns/decimal) |
+
 ## Arithmetic Operations
 
 This library focuses on storage and comparison, not arithmetic. Existing Rust decimal libraries (`rust_decimal`, `bigdecimal`) provide arithmetic but their byte representations are **not lexicographically sortable** - you cannot compare their serialized bytes to determine numerical order. That's the gap `decimal-bytes` fills: efficient storage with byte-level ordering for databases and search engines.
