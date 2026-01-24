@@ -146,30 +146,19 @@ This enables efficient range queries in sorted key-value stores without decoding
 
 ## Performance
 
-Benchmarks measured on Apple M1 Pro. Run `cargo bench` to reproduce.
+Key performance characteristics (see [latest benchmark results](https://github.com/paradedb/decimal-bytes/actions/workflows/bench.yml) for up-to-date numbers):
 
-### Parsing & Encoding
+| Operation | Time | Notes |
+|-----------|------|-------|
+| Byte comparison | ~4 ns | The key use case - compare without decoding |
+| `Decimal` comparison | ~4-5 ns | Uses byte comparison internally |
+| `from_str` (parse) | 88-375 ns | Scales with digit count |
+| `to_string` | 71-286 ns | Scales with digit count |
+| `from_bytes` | 58-261 ns | With validation |
+| `from_bytes_unchecked` | ~15 ns | Skip validation if bytes are trusted |
+| `is_nan()` / `is_infinity()` | ~1.3 ns | Fast special value checks |
 
-| Operation | Small (2 digits) | Medium (9 digits) | Large (30+ digits) |
-|-----------|------------------|-------------------|-------------------|
-| `from_str` | ~88 ns | ~140 ns | ~300 ns |
-| `to_string` | ~71 ns | ~96 ns | ~175 ns |
-| `from_bytes` | ~58 ns | ~96 ns | ~260 ns |
-| `from_bytes_unchecked` | ~15 ns | ~15 ns | ~15 ns |
-
-### Comparisons
-
-| Operation | Time |
-|-----------|------|
-| Byte comparison (`as_bytes() < as_bytes()`) | ~4 ns |
-| `Decimal` comparison (`<`, `==`) | ~4-5 ns |
-
-### Batch Operations
-
-| Operation | Time |
-|-----------|------|
-| Parse 10 decimals | ~1.2 µs (~120 ns/decimal) |
-| Sort 10 decimals | ~360 ns (~36 ns/decimal) |
+Run `cargo bench` locally to reproduce benchmarks on your hardware.
 
 ## Arithmetic Operations
 

@@ -173,20 +173,22 @@ jobs:
           # Run coverage and capture output
           COVERAGE_OUTPUT=$(cargo llvm-cov --all-features 2>&1)
           
-          # Extract the summary line (TOTAL row)
+          # Extract percentages using grep -o to find all percentage patterns
+          # Format: "Regions Cover% Functions Cover% Lines Cover%"
+          # We want the last percentage on each line (Line coverage)
+          
+          # Get the TOTAL line and extract percentages
           TOTAL_LINE=$(echo "$COVERAGE_OUTPUT" | grep "^TOTAL")
+          # Extract all percentages from the line, take the last one (line coverage)
+          LINE_COV=$(echo "$TOTAL_LINE" | grep -oE '[0-9]+\.[0-9]+%' | tail -1)
+          # Function coverage is the second percentage
+          FUNC_COV=$(echo "$TOTAL_LINE" | grep -oE '[0-9]+\.[0-9]+%' | head -2 | tail -1)
+          # Region coverage is the first percentage
+          REGION_COV=$(echo "$TOTAL_LINE" | grep -oE '[0-9]+\.[0-9]+%' | head -1)
           
-          # Parse coverage percentages
-          REGION_COV=$(echo "$TOTAL_LINE" | awk '{print $4}')
-          FUNC_COV=$(echo "$TOTAL_LINE" | awk '{print $7}')
-          LINE_COV=$(echo "$TOTAL_LINE" | awk '{print $10}')
-          
-          # Get file-level details
-          ENCODING_LINE=$(echo "$COVERAGE_OUTPUT" | grep "encoding.rs")
-          LIB_LINE=$(echo "$COVERAGE_OUTPUT" | grep "lib.rs")
-          
-          ENCODING_COV=$(echo "$ENCODING_LINE" | awk '{print $10}')
-          LIB_COV=$(echo "$LIB_LINE" | awk '{print $10}')
+          # Get file-level line coverage (last percentage on each line)
+          ENCODING_COV=$(echo "$COVERAGE_OUTPUT" | grep "encoding.rs" | grep -oE '[0-9]+\.[0-9]+%' | tail -1)
+          LIB_COV=$(echo "$COVERAGE_OUTPUT" | grep "lib.rs" | grep -oE '[0-9]+\.[0-9]+%' | tail -1)
           
           # Write formatted summary
           echo "## 📊 Code Coverage Summary" >> $GITHUB_STEP_SUMMARY
