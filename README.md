@@ -210,4 +210,4 @@ let restored: BigDecimal = (&stored).try_into().unwrap();
 
 ## License
 
-MIT
+MIT License - see [LICENSE](LICENSE) for details.
