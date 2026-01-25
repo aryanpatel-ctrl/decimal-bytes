@@ -226,9 +226,11 @@ fn bench_decimal64_parse(c: &mut Criterion) {
 
     for (name, input, scale) in cases {
         group.throughput(Throughput::Bytes(input.len() as u64));
-        group.bench_with_input(BenchmarkId::new("new", name), &(input, scale), |b, (s, sc)| {
-            b.iter(|| Decimal64::new(black_box(s), *sc).unwrap())
-        });
+        group.bench_with_input(
+            BenchmarkId::new("new", name),
+            &(input, scale),
+            |b, (s, sc)| b.iter(|| Decimal64::new(black_box(s), *sc).unwrap()),
+        );
     }
 
     // Auto-detect scale
@@ -318,9 +320,7 @@ fn bench_decimal64_serialization(c: &mut Criterion) {
 
     let d64 = Decimal64::new("123456.789012", 6).unwrap();
 
-    group.bench_function("to_be_bytes", |b| {
-        b.iter(|| black_box(d64).to_be_bytes())
-    });
+    group.bench_function("to_be_bytes", |b| b.iter(|| black_box(d64).to_be_bytes()));
 
     let bytes = d64.to_be_bytes();
     group.bench_function("from_be_bytes", |b| {
@@ -375,11 +375,9 @@ fn bench_comparison_decimal_vs_decimal64(c: &mut Criterion) {
 
     for (name, value, scale) in test_values {
         // Parse benchmarks
-        group.bench_with_input(
-            BenchmarkId::new("parse/Decimal", name),
-            value,
-            |b, s| b.iter(|| Decimal::from_str(black_box(s)).unwrap()),
-        );
+        group.bench_with_input(BenchmarkId::new("parse/Decimal", name), value, |b, s| {
+            b.iter(|| Decimal::from_str(black_box(s)).unwrap())
+        });
 
         group.bench_with_input(
             BenchmarkId::new("parse/Decimal64", name),
@@ -485,10 +483,15 @@ fn bench_memory_size(c: &mut Criterion) {
     let decimal64 = Decimal64::new("123456.789012", 6).unwrap();
 
     println!("\nMemory sizes:");
-    println!("  Decimal:   {} bytes (stack) + {} bytes (heap)",
-             std::mem::size_of_val(&decimal),
-             decimal.as_bytes().len());
-    println!("  Decimal64: {} bytes (total, no heap)", std::mem::size_of_val(&decimal64));
+    println!(
+        "  Decimal:   {} bytes (stack) + {} bytes (heap)",
+        std::mem::size_of_val(&decimal),
+        decimal.as_bytes().len()
+    );
+    println!(
+        "  Decimal64: {} bytes (total, no heap)",
+        std::mem::size_of_val(&decimal64)
+    );
 
     // Simulate creating many values (tests allocation overhead)
     group.throughput(Throughput::Elements(1000));

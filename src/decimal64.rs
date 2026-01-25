@@ -253,7 +253,7 @@ impl Decimal64 {
                 scale, MAX_DECIMAL64_SCALE
             )));
         }
-        if value < MIN_VALUE || value > MAX_VALUE {
+        if !(MIN_VALUE..=MAX_VALUE).contains(&value) {
             return Err(DecimalError::InvalidFormat(format!(
                 "Value {} doesn't fit in 56 bits (range {} to {})",
                 value, MIN_VALUE, MAX_VALUE
@@ -380,10 +380,8 @@ impl Decimal64 {
 
     // ==================== Conversions ====================
 
-    /// Converts to string representation.
-    ///
-    /// The scale is embedded in the value, so no external scale is needed.
-    pub fn to_string(&self) -> String {
+    /// Formats the decimal as a string (internal helper for Display).
+    fn format_decimal(&self) -> String {
         // Handle special values
         if self.is_neg_infinity() {
             return "-Infinity".to_string();
@@ -559,7 +557,7 @@ impl Decimal64 {
                 result
             };
 
-            if value < MIN_VALUE || value > MAX_VALUE {
+            if !(MIN_VALUE..=MAX_VALUE).contains(&value) {
                 return Err(DecimalError::InvalidFormat(
                     "Value too large for Decimal64".to_string(),
                 ));
@@ -599,7 +597,7 @@ impl Decimal64 {
 
         let value = if is_negative { -value } else { value };
 
-        if value < MIN_VALUE || value > MAX_VALUE {
+        if !(MIN_VALUE..=MAX_VALUE).contains(&value) {
             return Err(DecimalError::InvalidFormat(
                 "Value too large for Decimal64".to_string(),
             ));
@@ -650,7 +648,7 @@ impl Decimal64 {
         };
 
         let p = p as usize;
-        let max_int_digits = if p > scale { p - scale } else { 0 };
+        let max_int_digits = p.saturating_sub(scale);
 
         let int_part = int_part.trim_start_matches('0');
         let int_part = if int_part.is_empty() { "0" } else { int_part };
@@ -693,7 +691,7 @@ impl Decimal64 {
             value
         };
 
-        if value < MIN_VALUE || value > MAX_VALUE {
+        if !(MIN_VALUE..=MAX_VALUE).contains(&value) {
             return Err(DecimalError::InvalidFormat(
                 "Value too large for Decimal64".to_string(),
             ));
@@ -784,15 +782,13 @@ impl Ord for Decimal64 {
                     let max_scale = self_scale.max(other_scale);
 
                     let self_normalized = if self_scale < max_scale {
-                        self_value
-                            .saturating_mul(10i64.pow((max_scale - self_scale) as u32))
+                        self_value.saturating_mul(10i64.pow((max_scale - self_scale) as u32))
                     } else {
                         self_value
                     };
 
                     let other_normalized = if other_scale < max_scale {
-                        other_value
-                            .saturating_mul(10i64.pow((max_scale - other_scale) as u32))
+                        other_value.saturating_mul(10i64.pow((max_scale - other_scale) as u32))
                     } else {
                         other_value
                     };
@@ -829,7 +825,7 @@ impl fmt::Debug for Decimal64 {
 
 impl fmt::Display for Decimal64 {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "{}", self.to_string())
+        write!(f, "{}", self.format_decimal())
     }
 }
 
@@ -1001,7 +997,7 @@ mod tests {
 
     #[test]
     fn test_ordering_different_scale() {
-        let a = Decimal64::new("1.5", 1).unwrap();   // 15 at scale 1
+        let a = Decimal64::new("1.5", 1).unwrap(); // 15 at scale 1
         let b = Decimal64::new("1.50", 2).unwrap(); // 150 at scale 2
 
         // 1.5 == 1.50 when normalized
@@ -1057,7 +1053,12 @@ mod tests {
             let d: Decimal64 = s.parse().unwrap();
             let packed = d.raw();
             let restored = Decimal64::from_raw(packed);
-            assert_eq!(d.to_string(), restored.to_string(), "Roundtrip failed for {}", s);
+            assert_eq!(
+                d.to_string(),
+                restored.to_string(),
+                "Roundtrip failed for {}",
+                s
+            );
         }
     }
 
