@@ -1,5 +1,5 @@
 use criterion::{black_box, criterion_group, criterion_main, BenchmarkId, Criterion, Throughput};
-use decimal_bytes::Decimal;
+use decimal_bytes::{Decimal, Decimal64};
 use std::str::FromStr;
 
 /// Sample decimal strings of varying complexity
@@ -11,6 +11,14 @@ const MEDIUM_DECIMAL: &str = "123456.789012";
 const LARGE_DECIMAL: &str = "123456789.012345678901234567890123456789";
 const SCIENTIFIC: &str = "1.23456789e15";
 const NEGATIVE: &str = "-987654321.123456789";
+
+// Values that fit in Decimal64 (≤16 digits)
+const D64_SMALL_INT: &str = "42";
+const D64_MEDIUM_INT: &str = "123456789";
+const D64_SMALL_DECIMAL: &str = "3.14";
+const D64_MEDIUM_DECIMAL: &str = "123456.789012";
+const D64_FINANCIAL: &str = "9999999999.99"; // 12 digits, typical financial
+const D64_MAX_PRECISION: &str = "1234567890123456"; // 16 digits (max for Decimal64)
 
 fn bench_parse(c: &mut Criterion) {
     let mut group = c.benchmark_group("parse");
@@ -202,6 +210,308 @@ fn bench_batch_operations(c: &mut Criterion) {
     group.finish();
 }
 
+// ==================== Decimal64 Benchmarks ====================
+
+fn bench_decimal64_parse(c: &mut Criterion) {
+    let mut group = c.benchmark_group("decimal64_parse");
+
+    let cases = [
+        ("small_int", D64_SMALL_INT, 0u8),
+        ("medium_int", D64_MEDIUM_INT, 0),
+        ("small_decimal", D64_SMALL_DECIMAL, 2),
+        ("medium_decimal", D64_MEDIUM_DECIMAL, 6),
+        ("financial", D64_FINANCIAL, 2),
+        ("max_precision", D64_MAX_PRECISION, 0),
+    ];
+
+    for (name, input, scale) in cases {
+        group.throughput(Throughput::Bytes(input.len() as u64));
+        group.bench_with_input(BenchmarkId::new("new", name), &(input, scale), |b, (s, sc)| {
+            b.iter(|| Decimal64::new(black_box(s), *sc).unwrap())
+        });
+    }
+
+    // Auto-detect scale
+    group.bench_function("from_str_auto", |b| {
+        b.iter(|| Decimal64::from_str(black_box("123456.789012")).unwrap())
+    });
+
+    group.finish();
+}
+
+fn bench_decimal64_to_string(c: &mut Criterion) {
+    let mut group = c.benchmark_group("decimal64_to_string");
+
+    let cases = [
+        ("small_int", D64_SMALL_INT, 0u8),
+        ("medium_int", D64_MEDIUM_INT, 0),
+        ("small_decimal", D64_SMALL_DECIMAL, 2),
+        ("medium_decimal", D64_MEDIUM_DECIMAL, 6),
+        ("financial", D64_FINANCIAL, 2),
+    ];
+
+    for (name, input, scale) in cases {
+        let d64 = Decimal64::new(input, scale).unwrap();
+        group.bench_with_input(BenchmarkId::new("to_string", name), &d64, |b, d| {
+            b.iter(|| black_box(d).to_string())
+        });
+    }
+
+    group.finish();
+}
+
+fn bench_decimal64_comparison(c: &mut Criterion) {
+    let mut group = c.benchmark_group("decimal64_comparison");
+
+    let a = Decimal64::new("123456.789", 3).unwrap();
+    let b = Decimal64::new("123456.790", 3).unwrap();
+    let c_val = Decimal64::new("123456.789", 3).unwrap();
+
+    group.bench_function("cmp_less", |bench| {
+        bench.iter(|| black_box(a) < black_box(b))
+    });
+
+    group.bench_function("cmp_equal", |bench| {
+        bench.iter(|| black_box(a) == black_box(c_val))
+    });
+
+    // Compare raw packed values (single i64 comparison)
+    group.bench_function("cmp_raw", |bench| {
+        bench.iter(|| black_box(a.raw()) < black_box(b.raw()))
+    });
+
+    // Different scales (requires normalization)
+    let d1 = Decimal64::new("1.5", 1).unwrap();
+    let d2 = Decimal64::new("1.50", 2).unwrap();
+    group.bench_function("cmp_diff_scale", |bench| {
+        bench.iter(|| black_box(d1).cmp(&black_box(d2)))
+    });
+
+    group.finish();
+}
+
+fn bench_decimal64_special(c: &mut Criterion) {
+    let mut group = c.benchmark_group("decimal64_special");
+
+    group.bench_function("create_infinity", |b| b.iter(|| Decimal64::infinity()));
+    group.bench_function("create_nan", |b| b.iter(|| Decimal64::nan()));
+
+    group.bench_function("parse_infinity", |b| {
+        b.iter(|| Decimal64::from_str(black_box("Infinity")).unwrap())
+    });
+
+    let inf = Decimal64::infinity();
+    let nan = Decimal64::nan();
+
+    group.bench_function("is_infinity", |b| b.iter(|| black_box(inf).is_infinity()));
+    group.bench_function("is_nan", |b| b.iter(|| black_box(nan).is_nan()));
+    group.bench_function("is_finite", |b| {
+        let d = Decimal64::new("123.45", 2).unwrap();
+        b.iter(|| black_box(d).is_finite())
+    });
+
+    group.finish();
+}
+
+fn bench_decimal64_serialization(c: &mut Criterion) {
+    let mut group = c.benchmark_group("decimal64_serialization");
+
+    let d64 = Decimal64::new("123456.789012", 6).unwrap();
+
+    group.bench_function("to_be_bytes", |b| {
+        b.iter(|| black_box(d64).to_be_bytes())
+    });
+
+    let bytes = d64.to_be_bytes();
+    group.bench_function("from_be_bytes", |b| {
+        b.iter(|| Decimal64::from_be_bytes(black_box(bytes)))
+    });
+
+    // JSON serialization
+    let json = serde_json::to_string(&d64).unwrap();
+    group.bench_function("serialize_json", |b| {
+        b.iter(|| serde_json::to_string(black_box(&d64)).unwrap())
+    });
+
+    group.bench_function("deserialize_json", |b| {
+        b.iter(|| serde_json::from_str::<Decimal64>(black_box(&json)).unwrap())
+    });
+
+    group.finish();
+}
+
+fn bench_decimal64_precision_scale(c: &mut Criterion) {
+    let mut group = c.benchmark_group("decimal64_precision_scale");
+
+    group.bench_function("with_precision_scale", |b| {
+        b.iter(|| {
+            Decimal64::with_precision_scale(black_box("123.456789"), Some(10), Some(2)).unwrap()
+        })
+    });
+
+    group.bench_function("negative_scale", |b| {
+        b.iter(|| Decimal64::with_precision_scale(black_box("123456"), Some(10), Some(-3)).unwrap())
+    });
+
+    group.bench_function("from_parts", |b| {
+        b.iter(|| Decimal64::from_parts(black_box(12345678), black_box(2)).unwrap())
+    });
+
+    group.finish();
+}
+
+// ==================== Decimal vs Decimal64 Comparison ====================
+
+fn bench_comparison_decimal_vs_decimal64(c: &mut Criterion) {
+    let mut group = c.benchmark_group("decimal_vs_decimal64");
+
+    // Values that fit in both types (≤16 digits)
+    let test_values = [
+        ("small_int", "42", 0u8),
+        ("medium_decimal", "123456.789012", 6),
+        ("financial", "9999999999.99", 2),
+        ("max_d64_precision", "1234567890123456", 0),
+    ];
+
+    for (name, value, scale) in test_values {
+        // Parse benchmarks
+        group.bench_with_input(
+            BenchmarkId::new("parse/Decimal", name),
+            value,
+            |b, s| b.iter(|| Decimal::from_str(black_box(s)).unwrap()),
+        );
+
+        group.bench_with_input(
+            BenchmarkId::new("parse/Decimal64", name),
+            &(value, scale),
+            |b, (s, sc)| b.iter(|| Decimal64::new(black_box(s), *sc).unwrap()),
+        );
+
+        // to_string benchmarks
+        let decimal = Decimal::from_str(value).unwrap();
+        let decimal64 = Decimal64::new(value, scale).unwrap();
+
+        group.bench_with_input(
+            BenchmarkId::new("to_string/Decimal", name),
+            &decimal,
+            |b, d| b.iter(|| black_box(d).to_string()),
+        );
+
+        group.bench_with_input(
+            BenchmarkId::new("to_string/Decimal64", name),
+            &decimal64,
+            |b, d| b.iter(|| black_box(d).to_string()),
+        );
+    }
+
+    group.finish();
+}
+
+fn bench_batch_decimal_vs_decimal64(c: &mut Criterion) {
+    let mut group = c.benchmark_group("batch_decimal_vs_decimal64");
+
+    // Financial data simulation (all values fit in Decimal64)
+    let financial_inputs: Vec<(&str, u8)> = vec![
+        ("100.50", 2),
+        ("-50.25", 2),
+        ("0.00", 2),
+        ("999.99", 2),
+        ("-0.01", 2),
+        ("10000.00", 2),
+        ("42.00", 2),
+        ("-100.00", 2),
+        ("3.14", 2),
+        ("2.71", 2),
+    ];
+
+    let financial_strs: Vec<&str> = financial_inputs.iter().map(|(s, _)| *s).collect();
+
+    // Batch parsing
+    group.throughput(Throughput::Elements(10));
+
+    group.bench_function("parse_10/Decimal", |b| {
+        b.iter(|| {
+            financial_strs
+                .iter()
+                .map(|s| Decimal::from_str(black_box(s)).unwrap())
+                .collect::<Vec<_>>()
+        })
+    });
+
+    group.bench_function("parse_10/Decimal64", |b| {
+        b.iter(|| {
+            financial_inputs
+                .iter()
+                .map(|(s, scale)| Decimal64::new(black_box(s), *scale).unwrap())
+                .collect::<Vec<_>>()
+        })
+    });
+
+    // Sorting
+    let decimals: Vec<Decimal> = financial_strs
+        .iter()
+        .map(|s| Decimal::from_str(s).unwrap())
+        .collect();
+
+    let decimal64s: Vec<Decimal64> = financial_inputs
+        .iter()
+        .map(|(s, scale)| Decimal64::new(s, *scale).unwrap())
+        .collect();
+
+    group.bench_function("sort_10/Decimal", |b| {
+        b.iter(|| {
+            let mut d = decimals.clone();
+            d.sort();
+            black_box(d)
+        })
+    });
+
+    group.bench_function("sort_10/Decimal64", |b| {
+        b.iter(|| {
+            let mut d = decimal64s.clone();
+            d.sort();
+            black_box(d)
+        })
+    });
+
+    group.finish();
+}
+
+fn bench_memory_size(c: &mut Criterion) {
+    let mut group = c.benchmark_group("memory_size");
+
+    // This demonstrates the size difference
+    let decimal = Decimal::from_str("123456.789012").unwrap();
+    let decimal64 = Decimal64::new("123456.789012", 6).unwrap();
+
+    println!("\nMemory sizes:");
+    println!("  Decimal:   {} bytes (stack) + {} bytes (heap)",
+             std::mem::size_of_val(&decimal),
+             decimal.as_bytes().len());
+    println!("  Decimal64: {} bytes (total, no heap)", std::mem::size_of_val(&decimal64));
+
+    // Simulate creating many values (tests allocation overhead)
+    group.throughput(Throughput::Elements(1000));
+
+    group.bench_function("create_1000/Decimal", |b| {
+        b.iter(|| {
+            (0..1000)
+                .map(|i| Decimal::from_str(&format!("{}.99", i)).unwrap())
+                .collect::<Vec<_>>()
+        })
+    });
+
+    group.bench_function("create_1000/Decimal64", |b| {
+        b.iter(|| {
+            (0..1000)
+                .map(|i| Decimal64::new(&format!("{}.99", i), 2).unwrap())
+                .collect::<Vec<_>>()
+        })
+    });
+
+    group.finish();
+}
+
 criterion_group!(
     benches,
     bench_parse,
@@ -212,6 +522,17 @@ criterion_group!(
     bench_serialization,
     bench_from_bytes,
     bench_batch_operations,
+    // Decimal64 specific
+    bench_decimal64_parse,
+    bench_decimal64_to_string,
+    bench_decimal64_comparison,
+    bench_decimal64_special,
+    bench_decimal64_serialization,
+    bench_decimal64_precision_scale,
+    // Comparison benchmarks
+    bench_comparison_decimal_vs_decimal64,
+    bench_batch_decimal_vs_decimal64,
+    bench_memory_size,
 );
 
 criterion_main!(benches);

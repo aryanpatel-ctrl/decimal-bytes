@@ -10,19 +10,103 @@ Arbitrary precision decimals with lexicographically sortable byte encoding.
 
 ## Overview
 
-This crate provides a `Decimal` type that stores decimal numbers as bytes in a format that preserves numerical ordering when compared lexicographically. This makes it ideal for use in databases and search engines where efficient range queries on decimal values are needed.
+This crate provides two decimal types optimized for database storage:
+
+- **`Decimal`**: Variable-length arbitrary precision (up to 131,072 digits)
+- **`Decimal64`**: Fixed 8-byte representation (precision ≤ 16 digits)
+
+Both types support PostgreSQL special values (NaN, ±Infinity) with correct sort ordering.
 
 **Why not use `rust_decimal` or `bigdecimal`?** Those libraries are excellent for arithmetic, but their byte representations are not lexicographically sortable. You cannot compare their serialized bytes to determine numerical order - you must deserialize first. `decimal-bytes` solves this by providing a byte encoding where `bytes(a) < bytes(b)` if and only if `a < b` numerically.
 
+## When to Use Which
+
+| Type | Precision | Scale | Storage | Best For |
+|------|-----------|-------|---------|----------|
+| `Decimal64` | ≤ 16 digits | 0-18 | 8 bytes | Financial data, fixed-size storage |
+| `Decimal` | Unlimited | Unlimited | Variable | Scientific, very large numbers |
+
 ## Features
 
-- **Bytes-first storage**: The primary representation is a compact byte array - no constant conversions
+- **Dual storage options**: Fixed 8-byte (`Decimal64`) or variable-length (`Decimal`)
 - **Lexicographic ordering**: Byte comparison matches numerical comparison
-- **Arbitrary precision**: Supports up to 131,072 digits before and 16,383 digits after the decimal point
 - **PostgreSQL NUMERIC compatibility**: Full support for precision, scale (including negative), and special values
 - **Special values**: Infinity, -Infinity, and NaN with correct PostgreSQL sort order
 
-## Usage
+## Decimal64 Usage
+
+For most financial and business applications where precision ≤ 16 digits:
+
+```rust
+use decimal_bytes::Decimal64;
+
+// Create with scale
+let price = Decimal64::new("99.99", 2).unwrap();
+assert_eq!(price.to_string(), "99.99");
+assert_eq!(price.scale(), 2);
+
+// Parse with automatic scale detection
+let d: Decimal64 = "123.456".parse().unwrap();
+assert_eq!(d.scale(), 3);
+
+// Access raw components
+let value = price.value();  // 9999 (scaled integer)
+let scale = price.scale();  // 2
+
+// Special values (PostgreSQL compatible)
+let inf = Decimal64::infinity();
+let neg_inf = Decimal64::neg_infinity();
+let nan = Decimal64::nan();
+
+// Correct sort order: -Infinity < numbers < +Infinity < NaN
+assert!(neg_inf < price);
+assert!(price < inf);
+assert!(inf < nan);
+
+// NaN equals NaN (PostgreSQL semantics)
+assert_eq!(nan, Decimal64::nan());
+```
+
+### Decimal64 with Precision and Scale (PostgreSQL NUMERIC)
+
+`Decimal64` fully supports PostgreSQL's `NUMERIC(precision, scale)` semantics:
+
+```rust
+use decimal_bytes::Decimal64;
+
+// NUMERIC(5, 2) - up to 5 digits total, 2 after decimal
+let d = Decimal64::with_precision_scale("123.456", Some(5), Some(2)).unwrap();
+assert_eq!(d.to_string(), "123.46"); // Rounded to 2 decimal places
+
+// Precision overflow - truncates from left (PostgreSQL behavior)
+let d = Decimal64::with_precision_scale("12345.67", Some(5), Some(2)).unwrap();
+assert_eq!(d.to_string(), "345.67"); // Keeps rightmost 5 digits
+
+// NUMERIC(2, -3) - negative scale rounds to powers of 10
+let d = Decimal64::with_precision_scale("12345", Some(2), Some(-3)).unwrap();
+assert_eq!(d.to_string(), "12000"); // Rounded to nearest 1000
+```
+
+### Decimal64 Storage Layout
+
+```text
+64-bit packed representation:
+┌──────────────────┬─────────────────────────────────────────────────────┐
+│ Scale (8 bits)   │ Value (56 bits, signed)                             │
+│ Byte 0           │ Bytes 1-7                                           │
+└──────────────────┴─────────────────────────────────────────────────────┘
+```
+
+- **Scale byte**: 0-18 for normal values, 253/254/255 for -Infinity/+Infinity/NaN
+- **Value**: 56-bit signed integer (-2^55 to 2^55-1, ~16 significant digits)
+
+### Decimal64 Benefits
+
+- **Fixed 8 bytes**: Predictable storage, no heap allocation, cache-friendly
+- **PostgreSQL compatible**: Full NUMERIC(p,s) semantics including NaN, ±Infinity
+- **Fast operations**: Single i64 comparison and serialization
+
+## Decimal Usage (Arbitrary Precision)
 
 ```rust
 use decimal_bytes::Decimal;
@@ -146,14 +230,46 @@ This enables efficient range queries in sorted key-value stores without decoding
 
 ## Performance
 
-Key performance characteristics (see [latest benchmark results](https://github.com/paradedb/decimal-bytes/actions/workflows/bench.yml) for up-to-date numbers):
+### Decimal64 vs Decimal Comparison
+
+For values that fit in Decimal64 (≤16 digits), Decimal64 is significantly faster:
+
+| Operation | Decimal | Decimal64 | Speedup |
+|-----------|---------|-----------|---------|
+| Parse (small int) | 84 ns | 64 ns | 1.3x |
+| Parse (16 digits) | 130 ns | 71 ns | **1.8x** |
+| to_string (small int) | 61 ns | 19 ns | **3.2x** |
+| to_string (16 digits) | 89 ns | 21 ns | **4.2x** |
+| Sort 10 values | 313 ns | 71 ns | **4.4x** |
+| Equality check | ~4 ns | 0.5 ns | **8x** |
+
+### Memory Usage
+
+| Type | Stack | Heap | Total |
+|------|-------|------|-------|
+| Decimal64 | 8 bytes | 0 | **8 bytes** |
+| Decimal | 24 bytes | ~9 bytes | ~33 bytes |
+
+### Decimal64 Operations
+
+| Operation | Time | Notes |
+|-----------|------|-------|
+| Parse (`new`) | 64-71 ns | Scales with digit count |
+| `to_string()` | 19-88 ns | Scales with digit count |
+| Equality (`==`) | 0.5 ns | Single i64 comparison |
+| Comparison (same scale) | 1.6 ns | Direct value comparison |
+| Comparison (diff scale) | 2 ns | Requires normalization |
+| `to_be_bytes()` | 0.9 ns | Trivial conversion |
+| `from_be_bytes()` | 0.8 ns | Trivial conversion |
+| `is_nan()` / `is_infinity()` | 0.3 ns | Fast special value checks |
+
+### Decimal Operations (Arbitrary Precision)
 
 | Operation | Time | Notes |
 |-----------|------|-------|
 | Byte comparison | ~4 ns | The key use case - compare without decoding |
-| `Decimal` comparison | ~4-5 ns | Uses byte comparison internally |
-| `from_str` (parse) | 88-375 ns | Scales with digit count |
-| `to_string` | 71-286 ns | Scales with digit count |
+| `from_str` (parse) | 84-312 ns | Scales with digit count |
+| `to_string` | 61-89 ns | Scales with digit count |
 | `from_bytes` | 58-261 ns | With validation |
 | `from_bytes_unchecked` | ~15 ns | Skip validation if bytes are trusted |
 | `is_nan()` / `is_infinity()` | ~1.3 ns | Fast special value checks |

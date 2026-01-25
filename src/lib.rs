@@ -2,20 +2,46 @@
 //!
 //! Arbitrary precision decimals with lexicographically sortable byte encoding.
 //!
-//! This crate provides a `Decimal` type that stores decimal numbers as bytes
-//! in a format that preserves numerical ordering when compared lexicographically.
-//! This makes it ideal for use in databases and search engines where efficient
-//! range queries on decimal values are needed.
+//! This crate provides two decimal types optimized for database storage:
 //!
-//! ## Features
+//! - **[`Decimal`]**: Variable-length arbitrary precision (up to 131,072 digits)
+//! - **[`Decimal64`]**: Fixed 8-byte representation with embedded scale (precision ≤ 16 digits)
 //!
-//! - **Bytes-first storage**: The primary representation is a compact byte array
-//! - **Lexicographic ordering**: Byte comparison matches numerical comparison
-//! - **Arbitrary precision**: Supports up to 131,072 digits before and 16,383 after decimal
-//! - **PostgreSQL NUMERIC compatibility**: Full support for precision, scale, and special values
-//! - **Special values**: Infinity, -Infinity, and NaN with correct PostgreSQL sort order
+//! Both types support PostgreSQL special values (NaN, ±Infinity) with correct sort ordering.
 //!
-//! ## Example
+//! ## When to Use Which
+//!
+//! | Type | Precision | Scale | Storage | Best For |
+//! |------|-----------|-------|---------|----------|
+//! | `Decimal64` | ≤ 16 digits | 0-18 (embedded) | 8 bytes | Financial data, self-contained values |
+//! | `Decimal` | Unlimited | Unlimited | Variable | Scientific, very large numbers |
+//!
+//! ## Decimal64 Example
+//!
+//! ```
+//! use decimal_bytes::Decimal64;
+//!
+//! // Create with embedded scale
+//! let price = Decimal64::new("99.99", 2).unwrap();
+//! assert_eq!(price.to_string(), "99.99");
+//! assert_eq!(price.scale(), 2);  // Scale is embedded!
+//!
+//! // With precision and scale (PostgreSQL NUMERIC semantics)
+//! let d = Decimal64::with_precision_scale("123.456", Some(5), Some(2)).unwrap();
+//! assert_eq!(d.to_string(), "123.46"); // Rounded
+//!
+//! // Parse with automatic scale detection
+//! let d: Decimal64 = "123.456".parse().unwrap();
+//! assert_eq!(d.scale(), 3);
+//!
+//! // Special values
+//! let inf = Decimal64::infinity();
+//! let nan = Decimal64::nan();
+//! assert!(price < inf);
+//! assert!(inf < nan);
+//! ```
+//!
+//! ## Decimal Example (Arbitrary Precision)
 //!
 //! ```
 //! use decimal_bytes::Decimal;
@@ -28,9 +54,6 @@
 //! // Byte comparison matches numerical comparison
 //! assert!(a.as_bytes() < b.as_bytes());
 //! assert!(a < b);
-//!
-//! // Display the value
-//! assert_eq!(a.to_string(), "123.456");
 //!
 //! // Special values (PostgreSQL compatible)
 //! let inf = Decimal::infinity();
@@ -47,10 +70,11 @@
 //! -Infinity < negative numbers < zero < positive numbers < +Infinity < NaN
 //! ```
 //!
+//! Both `Decimal` and `Decimal64` support this sort order including special values.
+//!
 //! ## Special Value Semantics (PostgreSQL vs IEEE 754)
 //!
-//! This library follows **PostgreSQL semantics** for special values, which differ
-//! from IEEE 754 floating-point:
+//! The `Decimal` type follows **PostgreSQL semantics** for special values:
 //!
 //! | Behavior | PostgreSQL / decimal-bytes | IEEE 754 float |
 //! |----------|---------------------------|----------------|
@@ -75,6 +99,7 @@
 //! This makes `Decimal` suitable for use in indexes, sorting, and deduplication
 //! where consistent ordering and equality semantics are required.
 
+mod decimal64;
 mod encoding;
 
 use std::cmp::Ordering;
@@ -84,6 +109,7 @@ use std::str::FromStr;
 
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
+pub use decimal64::{Decimal64, MAX_DECIMAL64_PRECISION, MAX_DECIMAL64_SCALE};
 pub use encoding::DecimalError;
 pub use encoding::SpecialValue;
 use encoding::{
