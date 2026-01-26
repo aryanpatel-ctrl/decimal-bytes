@@ -10,12 +10,13 @@ Arbitrary precision decimals with lexicographically sortable byte encoding.
 
 ## Overview
 
-This crate provides two decimal types optimized for database storage:
+This crate provides three decimal types optimized for database storage:
 
 - **`Decimal`**: Variable-length arbitrary precision (up to 131,072 digits)
-- **`Decimal64`**: Fixed 8-byte representation (precision ≤ 16 digits)
+- **`Decimal64`**: Fixed 8-byte representation with embedded scale (precision ≤ 16 digits)
+- **`Decimal64NoScale`**: Fixed 8-byte representation with external scale (precision ≤ 18 digits)
 
-Both types support PostgreSQL special values (NaN, ±Infinity) with correct sort ordering.
+All types support PostgreSQL special values (NaN, ±Infinity) with correct sort ordering.
 
 **Why not use `rust_decimal` or `bigdecimal`?** Those libraries are excellent for arithmetic, but their byte representations are not lexicographically sortable. You cannot compare their serialized bytes to determine numerical order - you must deserialize first. `decimal-bytes` solves this by providing a byte encoding where `bytes(a) < bytes(b)` if and only if `a < b` numerically.
 
@@ -23,12 +24,14 @@ Both types support PostgreSQL special values (NaN, ±Infinity) with correct sort
 
 | Type | Precision | Scale | Storage | Best For |
 |------|-----------|-------|---------|----------|
-| `Decimal64` | ≤ 16 digits | 0-18 | 8 bytes | Financial data, fixed-size storage |
+| `Decimal64NoScale` | ≤ **18** digits | External | 8 bytes | **Columnar storage, aggregates** |
+| `Decimal64` | ≤ 16 digits | Embedded | 8 bytes | Self-contained values |
 | `Decimal` | Unlimited | Unlimited | Variable | Scientific, very large numbers |
 
 ## Features
 
-- **Dual storage options**: Fixed 8-byte (`Decimal64`) or variable-length (`Decimal`)
+- **Three storage options**: Fixed 8-byte (`Decimal64`, `Decimal64NoScale`) or variable-length (`Decimal`)
+- **Columnar-friendly**: `Decimal64NoScale` enables correct aggregates with external scale
 - **Lexicographic ordering**: Byte comparison matches numerical comparison
 - **PostgreSQL NUMERIC compatibility**: Full support for precision, scale (including negative), and special values
 - **Special values**: Infinity, -Infinity, and NaN with correct PostgreSQL sort order
@@ -105,6 +108,59 @@ assert_eq!(d.to_string(), "12000"); // Rounded to nearest 1000
 - **Fixed 8 bytes**: Predictable storage, no heap allocation, cache-friendly
 - **PostgreSQL compatible**: Full NUMERIC(p,s) semantics including NaN, ±Infinity
 - **Fast operations**: Single i64 comparison and serialization
+
+## Decimal64NoScale Usage (Recommended for Columnar Storage)
+
+`Decimal64NoScale` stores the raw scaled value without embedding the scale, enabling:
+- **18 digits of precision** (vs 16 for Decimal64)
+- **Correct aggregates** (SUM, MIN, MAX work directly on raw i64 values)
+- **Columnar storage compatibility** (scale stored once in schema metadata)
+
+```rust
+use decimal_bytes::Decimal64NoScale;
+
+// Scale is provided externally (e.g., from schema metadata)
+let scale = 2;
+let a = Decimal64NoScale::new("100.50", scale).unwrap();
+let b = Decimal64NoScale::new("200.25", scale).unwrap();
+
+// Raw values can be summed directly!
+let sum = a.value() + b.value();  // 30075
+assert_eq!(sum, 30075);
+
+// Interpret result with scale
+let result = Decimal64NoScale::from_raw(sum);
+assert_eq!(result.to_string_with_scale(scale), "300.75");
+
+// 18 digits supported (more than Decimal64's 16)
+let big = Decimal64NoScale::new("123456789012345678", 0).unwrap();
+assert_eq!(big.value(), 123456789012345678);
+```
+
+### Why Decimal64NoScale for Aggregates?
+
+`Decimal64` embeds scale in the i64, which **corrupts aggregate results**:
+
+```text
+Decimal64:        packed = (scale << 56) | mantissa
+                  SUM(a, b) = adds scale bits → WRONG!
+
+Decimal64NoScale: stored = value * 10^scale
+                  SUM(a, b) = (a+b)*scale → divide by scale → CORRECT!
+```
+
+### Decimal64NoScale Storage Layout
+
+```text
+64-bit representation:
+┌─────────────────────────────────────────────────────────────────┐
+│ Value (64 bits, signed) - represents value * 10^scale           │
+└─────────────────────────────────────────────────────────────────┘
+```
+
+- **Value**: Full 64-bit signed integer (±9.99×10^17, ~18 significant digits)
+- **Scale**: Stored externally (e.g., in database schema)
+- **Special values**: `i64::MIN` (NaN), `i64::MIN+1` (-Infinity), `i64::MAX` (+Infinity)
 
 ## Decimal Usage (Arbitrary Precision)
 
@@ -230,25 +286,34 @@ This enables efficient range queries in sorted key-value stores without decoding
 
 ## Performance
 
-### Decimal64 vs Decimal Comparison
+### Type Comparison Summary
 
-For values that fit in Decimal64 (≤16 digits), Decimal64 is significantly faster:
-
-| Operation | Decimal | Decimal64 | Speedup |
-|-----------|---------|-----------|---------|
-| Parse (small int) | 84 ns | 64 ns | 1.3x |
-| Parse (16 digits) | 130 ns | 71 ns | **1.8x** |
-| to_string (small int) | 61 ns | 19 ns | **3.2x** |
-| to_string (16 digits) | 89 ns | 21 ns | **4.2x** |
-| Sort 10 values | 313 ns | 71 ns | **4.4x** |
-| Equality check | ~4 ns | 0.5 ns | **8x** |
+| Type | Max Precision | Parse | Aggregates | Best For |
+|------|---------------|-------|------------|----------|
+| `Decimal64NoScale` | **18 digits** | ~85 µs/1000 | **✓ Correct, 17 Gelem/s** | Columnar storage |
+| `Decimal64` | 16 digits | ~136 µs/1000 | ✗ Wrong (scale corrupts) | Self-contained values |
+| `Decimal` | Unlimited | ~134 µs/1000 | N/A | Arbitrary precision |
 
 ### Memory Usage
 
 | Type | Stack | Heap | Total |
 |------|-------|------|-------|
+| Decimal64NoScale | 8 bytes | 0 | **8 bytes** |
 | Decimal64 | 8 bytes | 0 | **8 bytes** |
 | Decimal | 24 bytes | ~9 bytes | ~33 bytes |
+
+### Decimal64NoScale Operations (Recommended for Columnar)
+
+| Operation | Time | Notes |
+|-----------|------|-------|
+| Parse (`new`) | 60-85 ns | Scales with digit count |
+| `to_string_with_scale()` | 18-25 ns | Scales with digit count |
+| `from_raw()` | **<1 ns** | Trivial (just wrap i64) |
+| Equality (`==`) | **<1 ns** | Direct i64 comparison |
+| SUM 1000 values | **~59 ns** | 17 Gelem/s - just sum raw i64s |
+| MIN/MAX 1000 values | **~230 ns** | 4.3 Gelem/s - direct comparison |
+| `to_be_bytes()` | <1 ns | Trivial conversion |
+| `from_be_bytes()` | <1 ns | Trivial conversion |
 
 ### Decimal64 Operations
 
@@ -273,6 +338,21 @@ For values that fit in Decimal64 (≤16 digits), Decimal64 is significantly fast
 | `from_bytes` | 58-261 ns | With validation |
 | `from_bytes_unchecked` | ~15 ns | Skip validation if bytes are trusted |
 | `is_nan()` / `is_infinity()` | ~1.3 ns | Fast special value checks |
+
+### Aggregate Performance (Key Differentiator)
+
+For columnar storage where aggregates are important:
+
+| Operation | Decimal64NoScale | Decimal64 | Speedup |
+|-----------|------------------|-----------|---------|
+| SUM 1000 values | **59 ns** (17 Gelem/s) | 275 ns (3.6 Gelem/s) | **4.7x** |
+| MIN/MAX 1000 values | **230 ns** (4.3 Gelem/s) | 1001 ns (1 Gelem/s) | **4.3x** |
+| Create 1000 values | **85 µs** | 136 µs | **1.6x** |
+| Results correct? | **✓ Yes** | **✗ No** | - |
+
+**Why is Decimal64NoScale faster?**
+- `Decimal64NoScale.value()` returns raw i64 directly
+- `Decimal64.value()` must unpack/mask the 56-bit value from the packed format
 
 Run `cargo bench` locally to reproduce benchmarks on your hardware.
 

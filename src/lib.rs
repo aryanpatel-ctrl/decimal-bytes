@@ -14,7 +14,7 @@
 //!
 //! | Type | Precision | Scale | Storage | Best For |
 //! |------|-----------|-------|---------|----------|
-//! | `Decimal64NoScale` | ≤ 18 digits | External | 8 bytes | **Columnar storage** (Tantivy), aggregates |
+//! | `Decimal64NoScale` | ≤ 18 digits | External | 8 bytes | **Columnar storage**, aggregates |
 //! | `Decimal64` | ≤ 16 digits | Embedded | 8 bytes | Self-contained values |
 //! | `Decimal` | Unlimited | Unlimited | Variable | Scientific, very large numbers |
 //!
