@@ -583,7 +583,9 @@ fn bench_decimal64ns_operations(c: &mut Criterion) {
 fn bench_decimal64ns_special(c: &mut Criterion) {
     let mut group = c.benchmark_group("decimal64ns_special");
 
-    group.bench_function("create_infinity", |b| b.iter(|| Decimal64NoScale::infinity()));
+    group.bench_function("create_infinity", |b| {
+        b.iter(|| Decimal64NoScale::infinity())
+    });
     group.bench_function("create_nan", |b| b.iter(|| Decimal64NoScale::nan()));
 
     let inf = Decimal64NoScale::infinity();
