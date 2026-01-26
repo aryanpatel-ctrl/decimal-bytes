@@ -2,19 +2,37 @@
 //!
 //! Arbitrary precision decimals with lexicographically sortable byte encoding.
 //!
-//! This crate provides two decimal types optimized for database storage:
+//! This crate provides three decimal types optimized for database storage:
 //!
 //! - **[`Decimal`]**: Variable-length arbitrary precision (up to 131,072 digits)
 //! - **[`Decimal64`]**: Fixed 8-byte representation with embedded scale (precision ≤ 16 digits)
+//! - **[`Decimal64NoScale`]**: Fixed 8-byte representation with external scale (precision ≤ 18 digits)
 //!
-//! Both types support PostgreSQL special values (NaN, ±Infinity) with correct sort ordering.
+//! All types support PostgreSQL special values (NaN, ±Infinity) with correct sort ordering.
 //!
 //! ## When to Use Which
 //!
 //! | Type | Precision | Scale | Storage | Best For |
 //! |------|-----------|-------|---------|----------|
-//! | `Decimal64` | ≤ 16 digits | 0-18 (embedded) | 8 bytes | Financial data, self-contained values |
+//! | `Decimal64NoScale` | ≤ 18 digits | External | 8 bytes | **Columnar storage** (Tantivy), aggregates |
+//! | `Decimal64` | ≤ 16 digits | Embedded | 8 bytes | Self-contained values |
 //! | `Decimal` | Unlimited | Unlimited | Variable | Scientific, very large numbers |
+//!
+//! ## Decimal64NoScale (Recommended for Columnar Storage)
+//!
+//! ```
+//! use decimal_bytes::Decimal64NoScale;
+//!
+//! // Scale is provided externally (e.g., from schema metadata)
+//! let scale = 2;
+//! let a = Decimal64NoScale::new("100.50", scale).unwrap();
+//! let b = Decimal64NoScale::new("200.25", scale).unwrap();
+//!
+//! // Aggregates work correctly - just sum the raw i64 values!
+//! let sum = a.value() + b.value();  // 30075
+//! let result = Decimal64NoScale::from_raw(sum);
+//! assert_eq!(result.to_string_with_scale(scale), "300.75");
+//! ```
 //!
 //! ## Decimal64 Example
 //!
@@ -100,6 +118,7 @@
 //! where consistent ordering and equality semantics are required.
 
 mod decimal64;
+mod decimal64_no_scale;
 mod encoding;
 
 use std::cmp::Ordering;
@@ -110,6 +129,9 @@ use std::str::FromStr;
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
 pub use decimal64::{Decimal64, MAX_DECIMAL64_PRECISION, MAX_DECIMAL64_SCALE};
+pub use decimal64_no_scale::{
+    Decimal64NoScale, MAX_DECIMAL64_NO_SCALE_PRECISION, MAX_DECIMAL64_NO_SCALE_SCALE,
+};
 pub use encoding::DecimalError;
 pub use encoding::SpecialValue;
 use encoding::{
