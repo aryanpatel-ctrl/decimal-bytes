@@ -193,6 +193,100 @@ impl Decimal64NoScale {
         Self { value }
     }
 
+    /// Creates a Decimal64NoScale from an i64 with the given scale.
+    ///
+    /// Multiplies the value by 10^scale. Returns an error if the result overflows.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use decimal_bytes::Decimal64NoScale;
+    ///
+    /// let d = Decimal64NoScale::from_i64(123, 2).unwrap();
+    /// assert_eq!(d.value(), 12300);  // 123 * 10^2
+    /// assert_eq!(d.to_string_with_scale(2), "123");
+    /// ```
+    pub fn from_i64(value: i64, scale: i32) -> Result<Self, DecimalError> {
+        if scale < 0 {
+            // Negative scale: divide (rounds toward zero)
+            let divisor = 10i64.pow((-scale) as u32);
+            return Ok(Self {
+                value: value / divisor,
+            });
+        }
+
+        if scale == 0 {
+            return Ok(Self { value });
+        }
+
+        let scale_factor = 10i64.pow(scale as u32);
+        let scaled = value.checked_mul(scale_factor).ok_or_else(|| {
+            DecimalError::InvalidFormat(format!(
+                "Overflow: {} * 10^{} exceeds i64 range",
+                value, scale
+            ))
+        })?;
+
+        if !(MIN_VALUE..=MAX_VALUE).contains(&scaled) {
+            return Err(DecimalError::InvalidFormat(
+                "Value too large for Decimal64NoScale".to_string(),
+            ));
+        }
+
+        Ok(Self { value: scaled })
+    }
+
+    /// Creates a Decimal64NoScale from a u64 with the given scale.
+    ///
+    /// Multiplies the value by 10^scale. Returns an error if the result overflows.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use decimal_bytes::Decimal64NoScale;
+    ///
+    /// let d = Decimal64NoScale::from_u64(123, 2).unwrap();
+    /// assert_eq!(d.value(), 12300);  // 123 * 10^2
+    /// ```
+    pub fn from_u64(value: u64, scale: i32) -> Result<Self, DecimalError> {
+        if value > i64::MAX as u64 {
+            return Err(DecimalError::InvalidFormat(format!(
+                "Value {} exceeds i64::MAX",
+                value
+            )));
+        }
+        Self::from_i64(value as i64, scale)
+    }
+
+    /// Creates a Decimal64NoScale from an f64 with the given scale.
+    ///
+    /// Converts via string to avoid floating-point precision loss during scaling.
+    /// Returns an error for NaN/Infinity or if the result overflows.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use decimal_bytes::Decimal64NoScale;
+    ///
+    /// let d = Decimal64NoScale::from_f64(123.45, 2).unwrap();
+    /// assert_eq!(d.value(), 12345);
+    /// assert_eq!(d.to_string_with_scale(2), "123.45");
+    /// ```
+    pub fn from_f64(value: f64, scale: i32) -> Result<Self, DecimalError> {
+        if value.is_nan() {
+            return Ok(Self::nan());
+        }
+        if value.is_infinite() {
+            return Ok(if value.is_sign_positive() {
+                Self::infinity()
+            } else {
+                Self::neg_infinity()
+            });
+        }
+        // Use string conversion to avoid precision loss
+        Self::new(&value.to_string(), scale)
+    }
+
     // ==================== Special Value Constructors ====================
 
     /// Creates positive infinity.
@@ -844,5 +938,55 @@ mod tests {
         let min = Decimal64NoScale::min_value();
         assert!(min.is_finite());
         assert!(min.value() < 0);
+    }
+
+    #[test]
+    fn test_from_i64() {
+        // Basic scaling
+        let d = Decimal64NoScale::from_i64(123, 2).unwrap();
+        assert_eq!(d.value(), 12300);
+        assert_eq!(d.to_string_with_scale(2), "123");
+
+        // Zero scale
+        let d = Decimal64NoScale::from_i64(123, 0).unwrap();
+        assert_eq!(d.value(), 123);
+
+        // Negative value
+        let d = Decimal64NoScale::from_i64(-50, 2).unwrap();
+        assert_eq!(d.value(), -5000);
+
+        // Negative scale (divides)
+        let d = Decimal64NoScale::from_i64(12345, -2).unwrap();
+        assert_eq!(d.value(), 123);
+    }
+
+    #[test]
+    fn test_from_u64() {
+        let d = Decimal64NoScale::from_u64(123, 2).unwrap();
+        assert_eq!(d.value(), 12300);
+
+        // Value too large
+        assert!(Decimal64NoScale::from_u64(u64::MAX, 0).is_err());
+    }
+
+    #[test]
+    fn test_from_f64() {
+        // Basic conversion
+        let d = Decimal64NoScale::from_f64(123.45, 2).unwrap();
+        assert_eq!(d.value(), 12345);
+        assert_eq!(d.to_string_with_scale(2), "123.45");
+
+        // Special values
+        assert!(Decimal64NoScale::from_f64(f64::NAN, 2).unwrap().is_nan());
+        assert!(Decimal64NoScale::from_f64(f64::INFINITY, 2)
+            .unwrap()
+            .is_pos_infinity());
+        assert!(Decimal64NoScale::from_f64(f64::NEG_INFINITY, 2)
+            .unwrap()
+            .is_neg_infinity());
+
+        // Negative value
+        let d = Decimal64NoScale::from_f64(-99.99, 2).unwrap();
+        assert_eq!(d.value(), -9999);
     }
 }
