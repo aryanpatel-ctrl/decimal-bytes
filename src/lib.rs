@@ -466,6 +466,9 @@ macro_rules! impl_from_int {
         $(
             impl From<$t> for Decimal {
                 fn from(val: $t) -> Self {
+                    // Integer conversion is infallible - always produces valid decimal bytes.
+                    // Uses string conversion internally since the byte encoding is designed
+                    // around decimal string parsing (BCD encoding of digit pairs).
                     Decimal::from_str(&val.to_string()).expect("Integer is always valid")
                 }
             }
@@ -474,6 +477,49 @@ macro_rules! impl_from_int {
 }
 
 impl_from_int!(i8, i16, i32, i64, i128, u8, u16, u32, u64, u128);
+
+impl TryFrom<f64> for Decimal {
+    type Error = DecimalError;
+
+    /// Converts an f64 to a Decimal.
+    ///
+    /// Special values are handled:
+    /// - `f64::NAN` → `Decimal::nan()`
+    /// - `f64::INFINITY` → `Decimal::infinity()`
+    /// - `f64::NEG_INFINITY` → `Decimal::neg_infinity()`
+    ///
+    /// Note: Due to f64's limited precision (~15-17 significant digits),
+    /// very precise decimal values may lose precision when converted from f64.
+    /// For exact decimal representation, use `Decimal::from_str()` instead.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use decimal_bytes::Decimal;
+    ///
+    /// let d: Decimal = 123.456f64.try_into().unwrap();
+    /// assert_eq!(d.to_string(), "123.456");
+    ///
+    /// let inf: Decimal = f64::INFINITY.try_into().unwrap();
+    /// assert!(inf.is_pos_infinity());
+    ///
+    /// let nan: Decimal = f64::NAN.try_into().unwrap();
+    /// assert!(nan.is_nan());
+    /// ```
+    fn try_from(val: f64) -> Result<Self, Self::Error> {
+        if val.is_nan() {
+            return Ok(Decimal::nan());
+        }
+        if val.is_infinite() {
+            return Ok(if val.is_sign_positive() {
+                Decimal::infinity()
+            } else {
+                Decimal::neg_infinity()
+            });
+        }
+        Decimal::from_str(&val.to_string())
+    }
+}
 
 impl Default for Decimal {
     fn default() -> Self {
@@ -703,6 +749,29 @@ mod tests {
 
         let d = Decimal::from(-100i32);
         assert_eq!(d.to_string(), "-100");
+    }
+
+    #[test]
+    fn test_from_f64() {
+        // Normal f64 values
+        let d: Decimal = 123.456f64.try_into().unwrap();
+        assert_eq!(d.to_string(), "123.456");
+
+        let d: Decimal = (-99.5f64).try_into().unwrap();
+        assert_eq!(d.to_string(), "-99.5");
+
+        let d: Decimal = 0.0f64.try_into().unwrap();
+        assert!(d.is_zero());
+
+        // Special values
+        let inf: Decimal = f64::INFINITY.try_into().unwrap();
+        assert!(inf.is_pos_infinity());
+
+        let neg_inf: Decimal = f64::NEG_INFINITY.try_into().unwrap();
+        assert!(neg_inf.is_neg_infinity());
+
+        let nan: Decimal = f64::NAN.try_into().unwrap();
+        assert!(nan.is_nan());
     }
 
     #[test]
