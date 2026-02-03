@@ -1,8 +1,8 @@
 # decimal-bytes
 
-[![CI](https://github.com/paradedb/decimal-bytes/actions/workflows/ci.yml/badge.svg)](https://github.com/paradedb/decimal-bytes/actions/workflows/ci.yml)
-[![codecov](https://codecov.io/gh/paradedb/decimal-bytes/graph/badge.svg)](https://codecov.io/gh/paradedb/decimal-bytes)
 [![Crates.io](https://img.shields.io/crates/v/decimal-bytes.svg)](https://crates.io/crates/decimal-bytes)
+[![codecov](https://codecov.io/gh/paradedb/decimal-bytes/graph/badge.svg)](https://codecov.io/gh/paradedb/decimal-bytes)
+[![CI](https://github.com/paradedb/decimal-bytes/actions/workflows/ci.yml/badge.svg)](https://github.com/paradedb/decimal-bytes/actions/workflows/ci.yml)
 [![Documentation](https://docs.rs/decimal-bytes/badge.svg)](https://docs.rs/decimal-bytes)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](https://opensource.org/licenses/MIT)
 
