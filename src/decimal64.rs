@@ -550,6 +550,7 @@ impl Decimal64 {
         // Unflip the sign bit and sign-extend the 56-bit value
         let biased = self.packed & VALUE_MASK;
         let raw = biased ^ SIGN_BIT; // Unflip sign bit
+
         // Check if sign bit (bit 55) is set after unflipping
         if raw & SIGN_BIT != 0 {
             // Negative: extend sign bits
