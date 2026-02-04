@@ -49,6 +49,20 @@
 //! assert!(price < inf);
 //! assert!(inf < nan);
 //! ```
+//!
+//! ## Comparison and Raw i64 Ordering
+//!
+//! `Decimal64` uses a sign-bit-flip encoding that enables **partial** raw i64 comparison:
+//!
+//! **Works correctly with raw i64 comparison:**
+//! - Same-scale values: `-100 < 0 < +100` ✓
+//! - Special values vs normal: `-Infinity < normals < +Infinity < NaN` ✓
+//!
+//! **Requires `Ord` trait (raw comparison incorrect):**
+//! - Cross-scale values: `10.00 (scale 2)` vs `1000 (scale 0)` need normalization
+//!
+//! For columnar storage where ALL comparisons must work with raw values,
+//! use [`Decimal64NoScale`] with an external scale instead.
 
 use std::cmp::Ordering;
 use std::fmt;
@@ -66,15 +80,23 @@ pub const MAX_DECIMAL64_PRECISION: u32 = 16;
 /// Maximum scale supported (0-18).
 pub const MAX_DECIMAL64_SCALE: u8 = 18;
 
-// Scale byte values for special values
-const SCALE_NEG_INFINITY: u8 = 253;
-const SCALE_POS_INFINITY: u8 = 254;
-const SCALE_NAN: u8 = 255;
-
 // 56-bit value limits
 const VALUE_BITS: u32 = 56;
 const MAX_VALUE: i64 = (1i64 << (VALUE_BITS - 1)) - 1; // 2^55 - 1
 const MIN_VALUE: i64 = -(1i64 << (VALUE_BITS - 1)); // -2^55
+const VALUE_MASK: i64 = (1i64 << VALUE_BITS) - 1;
+const SIGN_BIT: i64 = 1i64 << (VALUE_BITS - 1); // Bit 55
+
+// Sentinel values for special cases.
+// These are outside the normal packed value range (0x0000... to 0x12FF...)
+// and enable correct raw i64 comparison for:
+// - Same-scale values (via sign bit flip encoding)
+// - Special values vs normal values (via sentinel placement at i64 extremes)
+//
+// Sort order: -Infinity < normal values < +Infinity < NaN
+const SENTINEL_NEG_INFINITY: i64 = i64::MIN; // 0x8000_0000_0000_0000
+const SENTINEL_POS_INFINITY: i64 = i64::MAX - 1; // 0x7FFF_FFFF_FFFF_FFFE
+const SENTINEL_NAN: i64 = i64::MAX; // 0x7FFF_FFFF_FFFF_FFFF
 
 /// A fixed-precision decimal stored as a 64-bit integer with embedded scale.
 ///
@@ -85,11 +107,15 @@ const MIN_VALUE: i64 = -(1i64 << (VALUE_BITS - 1)); // -2^55
 ///
 /// ```text
 /// Byte:    [0]      [1]      [2]      [3]      [4]      [5]      [6]      [7]
-///          Scale    |<---------------- 56-bit signed value ---------------->|
+///          Scale    |<-------------- 56-bit biased value ------------------>|
 /// ```
 ///
-/// - **Scale (byte 0)**: 0-18 for normal values, special markers for Infinity/NaN
-/// - **Value (bytes 1-7)**: 56-bit signed integer representing `actual_value * 10^scale`
+/// - **Scale (byte 0)**: 0-18 for normal values
+/// - **Value (bytes 1-7)**: 56-bit value with sign bit flipped for correct ordering
+///
+/// The sign bit (bit 55) is flipped when packing, converting signed values to
+/// unsigned-comparable format. This enables correct raw i64 comparison for
+/// values at the same scale.
 ///
 /// ## Trade-offs
 ///
@@ -102,18 +128,24 @@ const MIN_VALUE: i64 = -(1i64 << (VALUE_BITS - 1)); // -2^55
 ///
 /// ## Special Values
 ///
-/// Special values are encoded using reserved scale bytes:
-/// - Scale = 253: -Infinity
-/// - Scale = 254: +Infinity
-/// - Scale = 255: NaN
+/// Special values use sentinel values at the extremes of the i64 range:
+/// - `-Infinity`: `i64::MIN`
+/// - `+Infinity`: `i64::MAX - 1`
+/// - `NaN`: `i64::MAX`
+///
+/// This ensures correct ordering: `-Infinity < normals < +Infinity < NaN`
 ///
 /// ## Ordering
 ///
-/// Within the same scale, values are ordered correctly. Across different scales,
-/// ordering requires conversion to a common scale or use of `cmp()`.
+/// Raw i64 comparison works correctly for:
+/// - Same-scale values (via sign-bit-flip encoding)
+/// - Special values vs any other value (via sentinel placement)
+///
+/// Cross-scale comparison requires the `Ord` trait which normalizes values.
 #[derive(Clone, Copy)]
 pub struct Decimal64 {
-    /// Packed representation: scale in high byte, 56-bit value in low 7 bytes
+    /// Packed representation: scale in high byte, biased 56-bit value in low 7 bytes.
+    /// Special values use sentinel values (i64::MIN, i64::MAX-1, i64::MAX).
     packed: i64,
 }
 
@@ -274,13 +306,17 @@ impl Decimal64 {
     /// Creates positive infinity.
     #[inline]
     pub const fn infinity() -> Self {
-        Self::pack_special(SCALE_POS_INFINITY)
+        Self {
+            packed: SENTINEL_POS_INFINITY,
+        }
     }
 
     /// Creates negative infinity.
     #[inline]
     pub const fn neg_infinity() -> Self {
-        Self::pack_special(SCALE_NEG_INFINITY)
+        Self {
+            packed: SENTINEL_NEG_INFINITY,
+        }
     }
 
     /// Creates NaN (Not a Number).
@@ -288,7 +324,9 @@ impl Decimal64 {
     /// Follows PostgreSQL semantics: `NaN == NaN` is `true`.
     #[inline]
     pub const fn nan() -> Self {
-        Self::pack_special(SCALE_NAN)
+        Self {
+            packed: SENTINEL_NAN,
+        }
     }
 
     // ==================== Accessors ====================
@@ -304,11 +342,10 @@ impl Decimal64 {
     /// Returns 0 for special values (NaN, Infinity).
     #[inline]
     pub fn scale(&self) -> u8 {
-        let scale_byte = self.scale_byte();
-        if scale_byte > MAX_DECIMAL64_SCALE {
-            0 // Special values
+        if self.is_special() {
+            0
         } else {
-            scale_byte
+            self.scale_byte()
         }
     }
 
@@ -345,13 +382,13 @@ impl Decimal64 {
     /// Returns true if this value is positive infinity.
     #[inline]
     pub fn is_pos_infinity(&self) -> bool {
-        self.scale_byte() == SCALE_POS_INFINITY
+        self.packed == SENTINEL_POS_INFINITY
     }
 
     /// Returns true if this value is negative infinity.
     #[inline]
     pub fn is_neg_infinity(&self) -> bool {
-        self.scale_byte() == SCALE_NEG_INFINITY
+        self.packed == SENTINEL_NEG_INFINITY
     }
 
     /// Returns true if this value is positive or negative infinity.
@@ -363,13 +400,15 @@ impl Decimal64 {
     /// Returns true if this value is NaN (Not a Number).
     #[inline]
     pub fn is_nan(&self) -> bool {
-        self.scale_byte() == SCALE_NAN
+        self.packed == SENTINEL_NAN
     }
 
     /// Returns true if this is a special value (Infinity or NaN).
     #[inline]
     pub fn is_special(&self) -> bool {
-        self.scale_byte() > MAX_DECIMAL64_SCALE
+        self.packed == SENTINEL_NEG_INFINITY
+            || self.packed == SENTINEL_POS_INFINITY
+            || self.packed == SENTINEL_NAN
     }
 
     /// Returns true if this is a finite number (not Infinity or NaN).
@@ -490,19 +529,14 @@ impl Decimal64 {
 
     #[inline]
     const fn pack(value: i64, scale: u8) -> Self {
-        // Pack: scale in high byte, value in low 56 bits
+        // Pack: scale in high byte, biased value in low 56 bits.
+        // We flip the sign bit (bit 55) to enable correct raw i64 comparison
+        // for values at the same scale. This converts signed to unsigned-comparable.
         let scale_part = (scale as i64) << VALUE_BITS;
-        let value_part = value & ((1i64 << VALUE_BITS) - 1);
+        let value_part = value & VALUE_MASK;
+        let biased_value = value_part ^ SIGN_BIT; // Flip sign bit
         Self {
-            packed: scale_part | value_part,
-        }
-    }
-
-    #[inline]
-    const fn pack_special(scale: u8) -> Self {
-        // Special values have scale marker and zero value
-        Self {
-            packed: (scale as i64) << VALUE_BITS,
+            packed: scale_part | biased_value,
         }
     }
 
@@ -513,10 +547,11 @@ impl Decimal64 {
 
     #[inline]
     fn unpack_value(&self) -> i64 {
-        // Sign-extend the 56-bit value
-        let raw = self.packed & ((1i64 << VALUE_BITS) - 1);
-        // Check if sign bit (bit 55) is set
-        if raw & (1i64 << (VALUE_BITS - 1)) != 0 {
+        // Unflip the sign bit and sign-extend the 56-bit value
+        let biased = self.packed & VALUE_MASK;
+        let raw = biased ^ SIGN_BIT; // Unflip sign bit
+        // Check if sign bit (bit 55) is set after unflipping
+        if raw & SIGN_BIT != 0 {
             // Negative: extend sign bits
             raw | (!0i64 << VALUE_BITS)
         } else {
@@ -744,12 +779,12 @@ impl PartialOrd for Decimal64 {
 
 impl Ord for Decimal64 {
     fn cmp(&self, other: &Self) -> Ordering {
-        // Handle special values
+        // Handle special values - sentinel values are designed for correct raw comparison
         match (self.is_special(), other.is_special()) {
             (true, true) => {
-                // Both special: compare scale bytes
-                // Order: -Infinity (253) < +Infinity (254) < NaN (255)
-                self.scale_byte().cmp(&other.scale_byte())
+                // Both special: compare raw packed values directly
+                // Sentinels are: NEG_INFINITY (i64::MIN) < POS_INFINITY (i64::MAX-1) < NAN (i64::MAX)
+                self.packed.cmp(&other.packed)
             }
             (true, false) => {
                 // self is special
@@ -1134,5 +1169,73 @@ mod tests {
         set.insert(Decimal64::nan());
 
         assert_eq!(set.len(), 3);
+    }
+
+    // ==================== Raw i64 Comparison Tests ====================
+
+    #[test]
+    fn test_raw_comparison_same_scale() {
+        // Same-scale values should compare correctly using raw i64
+        let neg = Decimal64::new("-100", 0).unwrap();
+        let zero = Decimal64::new("0", 0).unwrap();
+        let pos = Decimal64::new("100", 0).unwrap();
+
+        // Raw i64 comparison should work for same scale
+        assert!(
+            neg.raw() < zero.raw(),
+            "raw: -100 ({}) should be < 0 ({})",
+            neg.raw(),
+            zero.raw()
+        );
+        assert!(
+            zero.raw() < pos.raw(),
+            "raw: 0 ({}) should be < 100 ({})",
+            zero.raw(),
+            pos.raw()
+        );
+    }
+
+    #[test]
+    fn test_raw_comparison_special_values() {
+        // Special values should compare correctly using raw i64
+        let neg_inf = Decimal64::neg_infinity();
+        let min_normal = Decimal64::min_value();
+        let max_normal = Decimal64::max_value();
+        let pos_inf = Decimal64::infinity();
+        let nan = Decimal64::nan();
+
+        // Raw i64 comparison should place special values correctly
+        assert!(
+            neg_inf.raw() < min_normal.raw(),
+            "-Infinity should be < min_normal"
+        );
+        assert!(
+            max_normal.raw() < pos_inf.raw(),
+            "max_normal should be < +Infinity"
+        );
+        assert!(pos_inf.raw() < nan.raw(), "+Infinity should be < NaN");
+    }
+
+    #[test]
+    fn test_raw_comparison_cross_scale_limitation() {
+        // Cross-scale raw comparison does NOT work correctly
+        // This test documents the limitation
+        let ten_scale0 = Decimal64::new("10", 0).unwrap(); // 10
+        let ten_scale2 = Decimal64::new("10.00", 2).unwrap(); // 10.00 (stored as 1000 at scale 2)
+
+        // These are equal as decimal values
+        assert_eq!(
+            ten_scale0.cmp(&ten_scale2),
+            Ordering::Equal,
+            "Ord trait should compare equal"
+        );
+
+        // But raw comparison gives wrong result (scale 2 > scale 0 due to high byte)
+        // This is expected behavior - cross-scale requires Ord trait
+        assert_ne!(
+            ten_scale0.raw(),
+            ten_scale2.raw(),
+            "Raw values differ due to different scales"
+        );
     }
 }
