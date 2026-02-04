@@ -25,10 +25,10 @@
 //! └─────────────────────────────────────────────────────────────────┘
 //! ```
 //!
-//! Special values use sentinel i64 values:
-//! - `i64::MIN`: NaN
-//! - `i64::MIN + 1`: -Infinity
-//! - `i64::MAX`: +Infinity
+//! Special values use sentinel i64 values (PostgreSQL sort order):
+//! - `i64::MIN`: -Infinity (sorts lowest)
+//! - `i64::MAX - 1`: +Infinity
+//! - `i64::MAX`: NaN (sorts highest, per PostgreSQL semantics)
 //!
 //! ## Example
 //!
@@ -65,10 +65,10 @@ pub const MAX_DECIMAL64_NO_SCALE_PRECISION: u32 = 18;
 /// Maximum scale supported.
 pub const MAX_DECIMAL64_NO_SCALE_SCALE: i32 = 18;
 
-// Sentinel values for special cases
-const SENTINEL_NAN: i64 = i64::MIN;
-const SENTINEL_NEG_INFINITY: i64 = i64::MIN + 1;
-const SENTINEL_POS_INFINITY: i64 = i64::MAX;
+// Sentinel values for special cases (PostgreSQL sort order: -Inf < numbers < +Inf < NaN)
+const SENTINEL_NEG_INFINITY: i64 = i64::MIN;
+const SENTINEL_POS_INFINITY: i64 = i64::MAX - 1;
+const SENTINEL_NAN: i64 = i64::MAX;
 
 // 18-digit precision limits (matching MAX_DECIMAL64_NO_SCALE_PRECISION)
 const MIN_VALUE: i64 = -999_999_999_999_999_999i64;
@@ -94,10 +94,10 @@ const MAX_VALUE: i64 = 999_999_999_999_999_999i64;
 ///
 /// ## Special Values
 ///
-/// Special values use sentinel i64 values (at the extremes of the range):
-/// - `i64::MIN`: NaN (sorts highest per PostgreSQL semantics)
-/// - `i64::MIN + 1`: -Infinity (sorts lowest)
-/// - `i64::MAX`: +Infinity
+/// Special values use sentinel i64 values that sort correctly in standard i64 ordering:
+/// - `i64::MIN`: -Infinity (sorts lowest)
+/// - `i64::MAX - 1`: +Infinity
+/// - `i64::MAX`: NaN (sorts highest, per PostgreSQL semantics)
 #[derive(Clone, Copy, Default, Eq, PartialEq, Hash)]
 pub struct Decimal64NoScale {
     /// Raw value: actual_value * 10^scale (scale stored externally)
@@ -678,44 +678,11 @@ impl Ord for Decimal64NoScale {
     /// Compares values assuming same scale.
     ///
     /// For cross-scale comparison, use `cmp_with_scale()`.
+    ///
+    /// The sentinel values are chosen so that standard i64 comparison gives
+    /// PostgreSQL ordering: -Infinity < numbers < +Infinity < NaN
     fn cmp(&self, other: &Self) -> Ordering {
-        // Handle special values with PostgreSQL ordering: -Inf < numbers < +Inf < NaN
-        match (self.is_special(), other.is_special()) {
-            (true, true) => {
-                if self.is_nan() && other.is_nan() {
-                    Ordering::Equal
-                } else if self.is_nan() {
-                    Ordering::Greater
-                } else if other.is_nan() {
-                    Ordering::Less
-                } else if (self.is_pos_infinity() && other.is_pos_infinity())
-                    || (self.is_neg_infinity() && other.is_neg_infinity())
-                {
-                    Ordering::Equal
-                } else if self.is_neg_infinity() {
-                    Ordering::Less
-                } else if self.is_pos_infinity() || other.is_neg_infinity() {
-                    Ordering::Greater
-                } else {
-                    Ordering::Less
-                }
-            }
-            (true, false) => {
-                if self.is_neg_infinity() {
-                    Ordering::Less
-                } else {
-                    Ordering::Greater
-                }
-            }
-            (false, true) => {
-                if other.is_neg_infinity() {
-                    Ordering::Greater
-                } else {
-                    Ordering::Less
-                }
-            }
-            (false, false) => self.value.cmp(&other.value),
-        }
+        self.value.cmp(&other.value)
     }
 }
 
