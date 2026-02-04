@@ -707,15 +707,15 @@ fn bench_decimal64ns_18_digit_precision(c: &mut Criterion) {
         b.iter(|| Decimal::from_str(black_box(value_18)).unwrap())
     });
 
-    // 17 digits with 2 decimal places (17+2 = 19 total representation but 17 significant)
-    let value_17_decimal = "12345678901234567.89";
+    // 16 digits with 2 decimal places (16+2 = 18 scaled digits, max for Decimal64NoScale)
+    let value_16_decimal = "1234567890123456.78";
 
-    group.bench_function("Decimal64NoScale/17+2_decimal", |b| {
-        b.iter(|| Decimal64NoScale::new(black_box(value_17_decimal), 2).unwrap())
+    group.bench_function("Decimal64NoScale/16+2_decimal", |b| {
+        b.iter(|| Decimal64NoScale::new(black_box(value_16_decimal), 2).unwrap())
     });
 
-    group.bench_function("Decimal/17+2_decimal", |b| {
-        b.iter(|| Decimal::from_str(black_box(value_17_decimal)).unwrap())
+    group.bench_function("Decimal/16+2_decimal", |b| {
+        b.iter(|| Decimal::from_str(black_box(value_16_decimal)).unwrap())
     });
 
     group.finish();
