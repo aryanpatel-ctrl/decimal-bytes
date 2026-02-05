@@ -135,8 +135,9 @@ pub use decimal64_no_scale::{
 pub use encoding::DecimalError;
 pub use encoding::SpecialValue;
 use encoding::{
-    decode_special_value, decode_to_string, encode_decimal, encode_decimal_with_constraints,
-    encode_special_value, ENCODING_NAN, ENCODING_NEG_INFINITY, ENCODING_POS_INFINITY,
+    decode_special_value, decode_to_string, decode_to_string_with_scale, encode_decimal,
+    encode_decimal_with_constraints, encode_special_value, ENCODING_NAN, ENCODING_NEG_INFINITY,
+    ENCODING_POS_INFINITY,
 };
 
 /// An arbitrary precision decimal number stored as sortable bytes.
@@ -370,6 +371,37 @@ impl Decimal {
         Self {
             bytes: encode_special_value(SpecialValue::NaN),
         }
+    }
+
+    /// Converts this decimal to a string with a specific scale (number of decimal places).
+    ///
+    /// This ensures the output has exactly `scale` decimal places, adding trailing
+    /// zeros if needed. Useful for PostgreSQL NUMERIC display formatting where
+    /// the scale defines the display format.
+    ///
+    /// Special values (NaN, Infinity, -Infinity) are returned as-is without scale formatting.
+    ///
+    /// # Arguments
+    /// * `scale` - Number of decimal places to ensure in the output. Must be non-negative.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use decimal_bytes::Decimal;
+    /// use std::str::FromStr;
+    ///
+    /// let d = Decimal::from_str("1").unwrap();
+    /// assert_eq!(d.to_string_with_scale(18), "1.000000000000000000");
+    ///
+    /// let d = Decimal::from_str("1.5").unwrap();
+    /// assert_eq!(d.to_string_with_scale(3), "1.500");
+    ///
+    /// // Special values are unchanged
+    /// let nan = Decimal::nan();
+    /// assert_eq!(nan.to_string_with_scale(10), "NaN");
+    /// ```
+    pub fn to_string_with_scale(&self, scale: i32) -> String {
+        decode_to_string_with_scale(&self.bytes, scale).expect("Decimal contains valid bytes")
     }
 }
 

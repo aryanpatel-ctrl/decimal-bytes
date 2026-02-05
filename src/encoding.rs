@@ -211,6 +211,53 @@ pub fn decode_to_string(bytes: &[u8]) -> Result<String, DecimalError> {
     format_decimal(is_negative, &digits, exponent)
 }
 
+/// Decodes bytes back to a decimal string with a specific scale.
+///
+/// This ensures the output has exactly `scale` decimal places, adding trailing
+/// zeros if needed. This is useful for PostgreSQL NUMERIC display formatting.
+///
+/// # Arguments
+/// * `bytes` - The encoded decimal bytes
+/// * `scale` - Number of decimal places to ensure in the output
+///
+/// # Examples
+/// ```ignore
+/// // If bytes represent "1", with scale 18, returns "1.000000000000000000"
+/// // If bytes represent "1.5", with scale 18, returns "1.500000000000000000"
+/// ```
+pub fn decode_to_string_with_scale(bytes: &[u8], scale: i32) -> Result<String, DecimalError> {
+    // First decode to normalized string
+    let normalized = decode_to_string(bytes)?;
+
+    // Handle special values - they don't get scale formatting
+    if normalized == "NaN" || normalized == "Infinity" || normalized == "-Infinity" {
+        return Ok(normalized);
+    }
+
+    // If scale <= 0, no decimal places needed
+    if scale <= 0 {
+        return Ok(normalized);
+    }
+
+    let scale = scale as usize;
+
+    // Find the decimal point position
+    if let Some(dot_pos) = normalized.find('.') {
+        let current_decimals = normalized.len() - dot_pos - 1;
+        if current_decimals >= scale {
+            // Already has enough decimal places
+            Ok(normalized)
+        } else {
+            // Need to add trailing zeros
+            let zeros_needed = scale - current_decimals;
+            Ok(format!("{}{}", normalized, "0".repeat(zeros_needed)))
+        }
+    } else {
+        // No decimal point - add one with the required zeros
+        Ok(format!("{}.{}", normalized, "0".repeat(scale)))
+    }
+}
+
 /// Parses a decimal string into sign, digits, and exponent.
 fn parse_decimal(value: &str) -> Result<(bool, Vec<u8>, i32), DecimalError> {
     let value = value.trim();
