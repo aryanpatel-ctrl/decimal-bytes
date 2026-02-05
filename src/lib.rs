@@ -379,10 +379,14 @@ impl Decimal {
     /// zeros if needed. Useful for PostgreSQL NUMERIC display formatting where
     /// the scale defines the display format.
     ///
+    /// - Positive scale: adds decimal point with trailing zeros as needed
+    /// - Zero scale: no decimal point added
+    /// - Negative scale: no decimal point (value is already an integer)
+    ///
     /// Special values (NaN, Infinity, -Infinity) are returned as-is without scale formatting.
     ///
     /// # Arguments
-    /// * `scale` - Number of decimal places to ensure in the output. Must be non-negative.
+    /// * `scale` - Number of decimal places to ensure in the output
     ///
     /// # Examples
     ///
@@ -390,11 +394,20 @@ impl Decimal {
     /// use decimal_bytes::Decimal;
     /// use std::str::FromStr;
     ///
+    /// // Positive scale: includes decimal point and trailing zeros
     /// let d = Decimal::from_str("1").unwrap();
     /// assert_eq!(d.to_string_with_scale(18), "1.000000000000000000");
     ///
     /// let d = Decimal::from_str("1.5").unwrap();
     /// assert_eq!(d.to_string_with_scale(3), "1.500");
+    ///
+    /// // Zero scale: no decimal point
+    /// let d = Decimal::from_str("123").unwrap();
+    /// assert_eq!(d.to_string_with_scale(0), "123");
+    ///
+    /// // Negative scale: no decimal point
+    /// let d = Decimal::from_str("100").unwrap();
+    /// assert_eq!(d.to_string_with_scale(-2), "100");
     ///
     /// // Special values are unchanged
     /// let nan = Decimal::nan();

@@ -204,7 +204,7 @@ impl Decimal64NoScale {
     ///
     /// let d = Decimal64NoScale::from_i64(123, 2).unwrap();
     /// assert_eq!(d.value(), 12300);  // 123 * 10^2
-    /// assert_eq!(d.to_string_with_scale(2), "123");
+    /// assert_eq!(d.to_string_with_scale(2), "123.00");  // Preserves trailing zeros
     /// ```
     pub fn from_i64(value: i64, scale: i32) -> Result<Self, DecimalError> {
         if scale < 0 {
@@ -392,6 +392,13 @@ impl Decimal64NoScale {
 
     /// Formats the value as a decimal string using the given scale.
     ///
+    /// This preserves trailing zeros to match the specified scale, which is
+    /// important for PostgreSQL NUMERIC display formatting.
+    ///
+    /// - Positive scale: adds decimal point with trailing zeros as needed
+    /// - Zero scale: integer output, no decimal point
+    /// - Negative scale: multiplies by power of 10, no decimal point
+    ///
     /// # Arguments
     /// * `scale` - The scale to use for formatting
     ///
@@ -400,10 +407,27 @@ impl Decimal64NoScale {
     /// ```
     /// use decimal_bytes::Decimal64NoScale;
     ///
+    /// // Positive scale: includes decimal point and trailing zeros
     /// let d = Decimal64NoScale::from_raw(12345);
     /// assert_eq!(d.to_string_with_scale(2), "123.45");
     /// assert_eq!(d.to_string_with_scale(3), "12.345");
+    ///
+    /// // Trailing zeros are preserved for positive scale
+    /// let d = Decimal64NoScale::from_raw(300);  // Represents 3.00 with scale 2
+    /// assert_eq!(d.to_string_with_scale(2), "3.00");
+    ///
+    /// // Zero also includes trailing zeros for positive scale
+    /// let zero = Decimal64NoScale::from_raw(0);
+    /// assert_eq!(zero.to_string_with_scale(2), "0.00");
+    ///
+    /// // Zero scale: no decimal point
+    /// let d = Decimal64NoScale::from_raw(12345);
     /// assert_eq!(d.to_string_with_scale(0), "12345");
+    /// assert_eq!(zero.to_string_with_scale(0), "0");
+    ///
+    /// // Negative scale: multiplies, no decimal point
+    /// let d = Decimal64NoScale::from_raw(123);
+    /// assert_eq!(d.to_string_with_scale(-2), "12300");
     /// ```
     pub fn to_string_with_scale(&self, scale: i32) -> String {
         // Handle special values
@@ -420,7 +444,11 @@ impl Decimal64NoScale {
         let value = self.value;
 
         if value == 0 {
-            return "0".to_string();
+            return if scale > 0 {
+                format!("0.{}", "0".repeat(scale as usize))
+            } else {
+                "0".to_string()
+            };
         }
 
         let is_negative = value < 0;
@@ -444,13 +472,9 @@ impl Decimal64NoScale {
         let int_part = abs_value / scale_factor;
         let frac_part = abs_value % scale_factor;
 
-        let result = if frac_part == 0 {
-            int_part.to_string()
-        } else {
-            let frac_str = format!("{:0>width$}", frac_part, width = scale as usize);
-            let frac_str = frac_str.trim_end_matches('0');
-            format!("{}.{}", int_part, frac_str)
-        };
+        // Always include the decimal point and full scale digits (with trailing zeros)
+        let frac_str = format!("{:0>width$}", frac_part, width = scale as usize);
+        let result = format!("{}.{}", int_part, frac_str);
 
         if is_negative {
             format!("-{}", result)
@@ -797,17 +821,17 @@ mod tests {
         let sum = a.value() + b.value() + c.value();
         assert_eq!(sum, 60150); // 601.50 * 100
 
-        // Interpret with scale
+        // Interpret with scale - preserves trailing zeros
         let result = Decimal64NoScale::from_raw(sum);
-        assert_eq!(result.to_string_with_scale(scale), "601.5");
+        assert_eq!(result.to_string_with_scale(scale), "601.50");
 
-        // Min/Max
+        // Min/Max - preserves trailing zeros
         let values = [a.value(), b.value(), c.value()];
         let min = *values.iter().min().unwrap();
         let max = *values.iter().max().unwrap();
         assert_eq!(
             Decimal64NoScale::from_raw(min).to_string_with_scale(scale),
-            "100.5"
+            "100.50"
         );
         assert_eq!(
             Decimal64NoScale::from_raw(max).to_string_with_scale(scale),
@@ -890,8 +914,23 @@ mod tests {
 
     #[test]
     fn test_negative_scale() {
+        // Negative scale: rounds to left of decimal point, no decimal in output
         let d = Decimal64NoScale::new("12345", -2).unwrap();
         assert_eq!(d.to_string_with_scale(-2), "12300");
+
+        // More negative scale cases - should NOT have decimal points
+        let d = Decimal64NoScale::from_raw(123);
+        assert_eq!(d.to_string_with_scale(-1), "1230"); // 123 * 10
+        assert_eq!(d.to_string_with_scale(-2), "12300"); // 123 * 100
+
+        // Zero scale - should NOT have decimal point
+        let d = Decimal64NoScale::from_raw(12345);
+        assert_eq!(d.to_string_with_scale(0), "12345");
+
+        // Zero value with negative/zero scale - no decimal point
+        let zero = Decimal64NoScale::from_raw(0);
+        assert_eq!(zero.to_string_with_scale(0), "0");
+        assert_eq!(zero.to_string_with_scale(-2), "0");
     }
 
     #[test]
@@ -909,10 +948,10 @@ mod tests {
 
     #[test]
     fn test_from_i64() {
-        // Basic scaling
+        // Basic scaling - preserves trailing zeros
         let d = Decimal64NoScale::from_i64(123, 2).unwrap();
         assert_eq!(d.value(), 12300);
-        assert_eq!(d.to_string_with_scale(2), "123");
+        assert_eq!(d.to_string_with_scale(2), "123.00");
 
         // Zero scale
         let d = Decimal64NoScale::from_i64(123, 0).unwrap();
