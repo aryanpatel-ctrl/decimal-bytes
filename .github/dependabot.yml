@@ -8,6 +8,9 @@ updates:
     ignore:
       - dependency-name: "*"
         update-types: ["version-update:semver-patch"]
+      # MSRV is intentionally pinned to a specific Rust version (1.85).
+      # Ignore updates so Dependabot doesn't try to bump it every month.
+      - dependency-name: "dtolnay/rust-toolchain"
     groups:
       github-actions-dependencies:
         patterns:
