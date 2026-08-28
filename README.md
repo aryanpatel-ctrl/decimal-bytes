@@ -26,7 +26,7 @@ All types support PostgreSQL special values (NaN, ±Infinity) with correct sort 
 |------|-----------|-------|---------|----------|
 | `Decimal64NoScale` | ≤ **18** digits | External | 8 bytes | **Columnar storage, aggregates** |
 | `Decimal64` | ≤ 16 digits | Embedded | 8 bytes | Self-contained values |
-| `Decimal` | Unlimited | Unlimited | Variable | Scientific, very large numbers |
+| `Decimal` | ≤ 131,072 digits | ≤ 16,383 | Variable | Scientific, very large numbers |
 
 ## Features
 

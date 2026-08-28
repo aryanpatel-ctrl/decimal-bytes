@@ -63,7 +63,23 @@ const RESERVED_NAN_EXP: u16 = 0xFFFF; // For positive sign byte
 
 /// Exponent bias to make all exponents positive for encoding
 const EXPONENT_BIAS: i32 = 16384;
-const MAX_EXPONENT: i32 = 32767 - EXPONENT_BIAS - 2; // Reserve top 2 values for Infinity/NaN
+
+/// Written into the inline exponent field when the exponent is too large to fit
+/// there. On the positive side it sits directly below +Infinity (0xFFFE), so an
+/// escaped value sorts above every inline positive and below +Infinity; the
+/// negative side inherits the mirrored position from the usual inversion.
+const ESCAPED_EXPONENT_MARKER: u16 = 0xFFFD;
+
+/// Largest exponent still representable inline. The top three biased values are
+/// reserved for the escape marker, +Infinity and NaN.
+const MAX_INLINE_EXPONENT: i32 = 0xFFFC - EXPONENT_BIAS;
+
+/// Width of the extended exponent written after the escape marker.
+const EXTENDED_EXPONENT_LEN: usize = 4;
+
+/// PostgreSQL allows at most 131072 digits left of the decimal point, so this
+/// covers every finite NUMERIC it can hand us.
+const MAX_EXPONENT: i32 = 131_072;
 const MIN_EXPONENT: i32 = -EXPONENT_BIAS + 1; // Reserve 0x0000 for -Infinity
 
 /// Errors that can occur during decimal encoding/decoding.
@@ -389,16 +405,24 @@ fn parse_decimal(value: &str) -> Result<(bool, Vec<u8>, i32), DecimalError> {
 
 /// Encodes the exponent as variable-length bytes.
 fn encode_exponent(result: &mut Vec<u8>, exponent: i32, is_negative: bool) {
-    // Bias the exponent to make it always positive
-    // Note: We add 1 to reserve 0x0000 for -Infinity on negative side
-    let biased = (exponent + EXPONENT_BIAS) as u16;
+    // Complementing preserves descending magnitude order for negative values.
+    let push_inline = |result: &mut Vec<u8>, biased: u16| {
+        let encoded = if is_negative { !biased } else { biased };
 
-    // For negative numbers, invert the exponent so larger negative numbers sort first
-    let encoded = if is_negative { !biased } else { biased };
+        result.push((encoded >> 8) as u8);
+        result.push((encoded & 0xFF) as u8);
+    };
 
-    // Use 2 bytes for the exponent (big-endian)
-    result.push((encoded >> 8) as u8);
-    result.push((encoded & 0xFF) as u8);
+    if exponent > MAX_INLINE_EXPONENT {
+        // The extended exponent is complemented for negative values as well.
+        push_inline(result, ESCAPED_EXPONENT_MARKER);
+        let extended = exponent as u32;
+        let encoded = if is_negative { !extended } else { extended };
+        result.extend_from_slice(&encoded.to_be_bytes());
+        return;
+    }
+
+    push_inline(result, (exponent + EXPONENT_BIAS) as u16);
 }
 
 /// Decodes the exponent from bytes.
@@ -418,6 +442,24 @@ fn decode_exponent(bytes: &[u8], is_negative: bool) -> Result<(i32, usize), Deci
     }
 
     let biased = if is_negative { !encoded } else { encoded };
+
+    if biased == ESCAPED_EXPONENT_MARKER {
+        let extended = bytes
+            .get(2..2 + EXTENDED_EXPONENT_LEN)
+            .ok_or(DecimalError::InvalidEncoding)?;
+        let raw = u32::from_be_bytes([extended[0], extended[1], extended[2], extended[3]]);
+        let raw = if is_negative { !raw } else { raw };
+
+        // Only exponents that genuinely need the escape belong in this form;
+        // anything else would give a value two distinct encodings.
+        let exponent = i32::try_from(raw).map_err(|_| DecimalError::InvalidEncoding)?;
+        if !(MAX_INLINE_EXPONENT < exponent && exponent <= MAX_EXPONENT) {
+            return Err(DecimalError::InvalidEncoding);
+        }
+
+        return Ok((exponent, 2 + EXTENDED_EXPONENT_LEN));
+    }
+
     let exponent = (biased as i32) - EXPONENT_BIAS;
 
     Ok((exponent, 2))

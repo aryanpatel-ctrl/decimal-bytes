@@ -16,7 +16,7 @@
 //! |------|-----------|-------|---------|----------|
 //! | `Decimal64NoScale` | ≤ 18 digits | External | 8 bytes | **Columnar storage**, aggregates |
 //! | `Decimal64` | ≤ 16 digits | Embedded | 8 bytes | Self-contained values |
-//! | `Decimal` | Unlimited | Unlimited | Variable | Scientific, very large numbers |
+//! | `Decimal` | ≤ 131,072 digits | ≤ 16,383 | Variable | Scientific, very large numbers |
 //!
 //! ## Decimal64NoScale (Recommended for Columnar Storage)
 //!
@@ -1215,8 +1215,7 @@ mod tests {
 
     #[test]
     fn test_precision_overflow() {
-        // Exponent too large
-        let result = Decimal::from_str("1e20000");
+        let result = Decimal::from_str("1e200000");
         assert!(result.is_err());
         assert!(matches!(
             result.unwrap_err(),
@@ -1317,13 +1316,24 @@ mod tests {
 
     #[test]
     fn test_max_exponent_boundary() {
-        // Just under max exponent should work
-        let d = Decimal::from_str("1e16000").unwrap();
+        let d = Decimal::from_str("1e131071").unwrap();
         assert!(d.is_positive());
 
-        // Just over should fail
-        let result = Decimal::from_str("1e17000");
+        let result = Decimal::from_str("1e131072");
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_inline_to_escaped_exponent_boundary() {
+        // Straddles the point where the exponent stops fitting the inline field.
+        // 1e49147 is the last inline value; 1e49148 is the first escaped one.
+        let inline = Decimal::from_str("1e49147").unwrap();
+        let escaped = Decimal::from_str("1e49148").unwrap();
+
+        assert_eq!(inline.as_bytes().len(), escaped.as_bytes().len() - 4);
+        assert!(inline.as_bytes() < escaped.as_bytes());
+        assert_eq!(inline.to_string(), format!("1{}", "0".repeat(49147)));
+        assert_eq!(escaped.to_string(), format!("1{}", "0".repeat(49148)));
     }
 
     #[test]
