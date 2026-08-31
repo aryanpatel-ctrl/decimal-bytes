@@ -1,52 +1,114 @@
-//! Coverage for exponents that do not fit the inline 2-byte exponent field.
-//!
-//! PostgreSQL accepts NUMERIC values up to 1e131071, far beyond what the inline
-//! field can hold, so those values take an escaped form with a wider exponent.
-//! The escaped form has to keep two guarantees: it must sort correctly against
-//! every other encoding, and it must not disturb the bytes of values that
-//! already fit inline, because those are already sitting in on-disk indexes.
+//! Regression and property tests for escaped exponent encoding.
 
-use decimal_bytes::Decimal;
+use decimal_bytes::{Decimal, DecimalError};
 use proptest::prelude::*;
+use std::cmp::Ordering;
 use std::str::FromStr;
 
-/// The last exponent that still fits the inline field, expressed as the number
-/// of zeros in `1e<n>`. `1e49147` is inline, `1e49148` is escaped.
+const MIN_NORMALIZED_EXPONENT: i64 = -16_383;
+const LAST_INLINE_EXPONENT: i64 = 49_148;
+const MAX_NORMALIZED_EXPONENT: i64 = 131_072;
 const LAST_INLINE_ZEROS: usize = 49_147;
-
-/// `1e131071` is the largest finite value PostgreSQL's NUMERIC can represent.
 const MAX_PG_ZEROS: usize = 131_071;
 
-/// Builds `1e<zeros>` in the plain digit form that PostgreSQL's `numeric_out`
-/// produces, optionally negated.
 fn pow10(zeros: usize, negative: bool) -> String {
-    let mut s = String::with_capacity(zeros + 2);
+    let mut value = String::with_capacity(zeros + usize::from(negative) + 1);
     if negative {
-        s.push('-');
+        value.push('-');
     }
-    s.push('1');
-    for _ in 0..zeros {
-        s.push('0');
-    }
-    s
+    value.push('1');
+    value.extend(std::iter::repeat_n('0', zeros));
+    value
 }
 
 fn encode(value: &str) -> Vec<u8> {
     Decimal::from_str(value)
-        .unwrap_or_else(|e| panic!("failed to encode a {}-byte value: {e:?}", value.len()))
+        .unwrap_or_else(|error| panic!("failed to encode {value:?}: {error:?}"))
         .into_bytes()
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct Value {
+    negative: bool,
+    digits: String,
+    exponent: i64,
+}
+
+impl Value {
+    fn scientific(&self) -> String {
+        format!(
+            "{}0.{}e{}",
+            if self.negative { "-" } else { "" },
+            self.digits,
+            self.exponent
+        )
+    }
+
+    fn encode(&self) -> Vec<u8> {
+        encode(&self.scientific())
+    }
+
+    fn cmp_mathematically(&self, other: &Self) -> Ordering {
+        let magnitude = self
+            .exponent
+            .cmp(&other.exponent)
+            .then_with(|| self.digits.cmp(&other.digits));
+
+        match (self.negative, other.negative) {
+            (false, false) => magnitude,
+            (true, true) => magnitude.reverse(),
+            (true, false) => Ordering::Less,
+            (false, true) => Ordering::Greater,
+        }
+    }
+}
+
+fn digits_strategy(max_len: usize) -> impl Strategy<Value = String> {
+    (1..=max_len)
+        .prop_flat_map(|length| {
+            (
+                1u8..=9,
+                prop::collection::vec(0u8..=9, length.saturating_sub(2)),
+                1u8..=9,
+            )
+                .prop_map(move |(first, middle, last)| {
+                    let mut digits = vec![first];
+                    digits.extend(middle);
+                    if length > 1 {
+                        digits.push(last);
+                    }
+                    digits
+                })
+        })
+        .prop_map(|digits| {
+            digits
+                .into_iter()
+                .map(|digit| (b'0' + digit) as char)
+                .collect()
+        })
+}
+
+fn value_strategy() -> impl Strategy<Value = Value> {
+    (
+        any::<bool>(),
+        digits_strategy(40),
+        MIN_NORMALIZED_EXPONENT..=MAX_NORMALIZED_EXPONENT,
+    )
+        .prop_map(|(negative, digits, exponent)| Value {
+            negative,
+            digits,
+            exponent,
+        })
 }
 
 #[test]
 fn issue_6107_value_is_accepted() {
-    // The exact value from the bug report, which previously hit PrecisionOverflow.
-    let s = pow10(20_000, false);
-    let d = Decimal::from_str(&s).expect("1e20000 should encode");
-    assert_eq!(d.to_string(), s);
+    let value = pow10(20_000, false);
+    assert_eq!(Decimal::from_str(&value).unwrap().to_string(), value);
 }
 
 #[test]
-fn covers_the_whole_postgres_numeric_range() {
+fn representative_values_round_trip_across_the_supported_range() {
     for zeros in [
         0,
         1,
@@ -54,50 +116,57 @@ fn covers_the_whole_postgres_numeric_range() {
         16_380,
         16_381,
         LAST_INLINE_ZEROS,
-        49_148,
+        LAST_INLINE_ZEROS + 1,
         100_000,
         MAX_PG_ZEROS,
     ] {
         for negative in [false, true] {
-            let s = pow10(zeros, negative);
-            let d = Decimal::from_str(&s)
-                .unwrap_or_else(|e| panic!("1e{zeros} (negative={negative}) failed: {e:?}"));
+            let value = pow10(zeros, negative);
             assert_eq!(
-                d.to_string(),
-                s,
-                "1e{zeros} (negative={negative}) round-trip"
+                Decimal::from_str(&value).unwrap().to_string(),
+                value,
+                "round-trip failed for 1e{zeros}, negative={negative}"
             );
         }
+    }
+
+    for value in ["0.123456789e49148", "-0.123456789e49148"] {
+        let decimal = Decimal::from_str(value).unwrap();
+        let reparsed = Decimal::from_str(&decimal.to_string()).unwrap();
+        assert_eq!(decimal.into_bytes(), reparsed.into_bytes());
     }
 }
 
 #[test]
-fn rejects_values_postgres_cannot_represent() {
-    assert!(Decimal::from_str(&pow10(MAX_PG_ZEROS + 1, false)).is_err());
-    assert!(Decimal::from_str(&pow10(MAX_PG_ZEROS + 1, true)).is_err());
-}
+fn values_outside_the_supported_range_are_rejected() {
+    for value in [
+        format!("0.1e{}", MAX_NORMALIZED_EXPONENT + 1),
+        format!("-0.1e{}", MAX_NORMALIZED_EXPONENT + 1),
+        format!("0.1e{}", MIN_NORMALIZED_EXPONENT - 1),
+        format!("-0.1e{}", MIN_NORMALIZED_EXPONENT - 1),
+        "1e2147483647".to_string(),
+        "-1e2147483647".to_string(),
+    ] {
+        assert!(Decimal::from_str(&value).is_err(), "{value} should fail");
+    }
 
-#[test]
-fn escaped_form_is_only_used_once_the_inline_field_is_exhausted() {
-    let inline = encode(&pow10(LAST_INLINE_ZEROS, false));
-    let escaped = encode(&pow10(LAST_INLINE_ZEROS + 1, false));
-
-    // Sign byte + 2-byte exponent + mantissa, versus the same plus 4 more
-    // exponent bytes.
-    assert_eq!(escaped.len(), inline.len() + 4);
-    assert!(inline < escaped);
-
-    let inline_neg = encode(&pow10(LAST_INLINE_ZEROS, true));
-    let escaped_neg = encode(&pow10(LAST_INLINE_ZEROS + 1, true));
-    assert_eq!(escaped_neg.len(), inline_neg.len() + 4);
-    assert!(escaped_neg < inline_neg);
+    for value in [
+        "1e2147483647",
+        "-1e2147483647",
+        "1e2147483648",
+        "-1e-2147483648",
+    ] {
+        let result = Decimal::from_str(value);
+        assert!(
+            matches!(result, Err(DecimalError::PrecisionOverflow)),
+            "{value}: {result:?}"
+        );
+    }
 }
 
 #[test]
 fn inline_encodings_are_byte_for_byte_unchanged() {
-    // Captured from the crate before the escape marker existed. Any drift here
-    // means existing on-disk indexes would stop decoding or stop sorting.
-    let golden: &[(&str, &str)] = &[
+    let golden = [
         ("0", "80"),
         ("1", "ff400110"),
         ("-1", "00bffe89ff"),
@@ -121,119 +190,99 @@ fn inline_encodings_are_byte_for_byte_unchanged() {
     ];
 
     for (value, expected) in golden {
-        let hex: String = encode(value).iter().map(|b| format!("{b:02x}")).collect();
-        assert_eq!(&hex, expected, "encoding of {value} changed");
+        let actual: String = encode(value)
+            .iter()
+            .map(|byte| format!("{byte:02x}"))
+            .collect();
+        assert_eq!(actual, expected, "encoding of {value} changed");
     }
 }
 
 #[test]
-fn escaped_values_sort_between_inline_values_and_infinity() {
-    // Ascending by value. Sorting the encodings must reproduce this exact order.
-    let ordered = [
-        "-Infinity".to_string(),
-        pow10(MAX_PG_ZEROS, true),
-        pow10(100_000, true),
-        pow10(LAST_INLINE_ZEROS + 1, true),
-        pow10(LAST_INLINE_ZEROS, true),
-        pow10(16_380, true),
-        pow10(100, true),
-        "-1".to_string(),
-        "-0.0001".to_string(),
-        "0".to_string(),
-        "0.0001".to_string(),
-        "1".to_string(),
-        pow10(100, false),
-        pow10(16_380, false),
-        pow10(LAST_INLINE_ZEROS, false),
-        pow10(LAST_INLINE_ZEROS + 1, false),
-        pow10(100_000, false),
-        pow10(MAX_PG_ZEROS, false),
-        "Infinity".to_string(),
-        "NaN".to_string(),
+fn escaped_encoding_starts_after_inline_range_and_before_infinity() {
+    let inline = encode(&pow10(LAST_INLINE_ZEROS, false));
+    let escaped = encode(&pow10(LAST_INLINE_ZEROS + 1, false));
+    assert_eq!(escaped.len(), inline.len() + 4);
+    assert_eq!(&escaped[1..3], &[0xff, 0xfd]);
+    assert!(inline < escaped);
+
+    let inline_negative = encode(&pow10(LAST_INLINE_ZEROS, true));
+    let escaped_negative = encode(&pow10(LAST_INLINE_ZEROS + 1, true));
+    assert_eq!(escaped_negative.len(), inline_negative.len() + 4);
+    assert!(escaped_negative < inline_negative);
+
+    assert!(escaped < encode("Infinity"));
+    assert!(encode("-Infinity") < escaped_negative);
+}
+
+#[test]
+fn malformed_and_noncanonical_exponents_are_rejected() {
+    let malformed = [
+        vec![0xff, 0xff, 0xfd],
+        vec![0xff, 0xff, 0xfd, 0, 0, 0, 1, 0x10],
+        vec![0xff, 0xff, 0xfd, 0, 2, 0, 1, 0x10],
+        vec![0xff, 0, 0, 0x10],
+        vec![0, 0xff, 0xff, 0x89, 0xff],
+        vec![0, 0, 1, 0x89, 0xff],
+        vec![0, 0, 0x02, 0xff, 0xff, 0xff, 0xff, 0xef],
     ];
 
-    let encoded: Vec<Vec<u8>> = ordered.iter().map(|v| encode(v)).collect();
-
-    for (i, pair) in encoded.windows(2).enumerate() {
+    for bytes in malformed {
         assert!(
-            pair[0] < pair[1],
-            "encoding at position {i} does not sort below position {}",
-            i + 1
+            Decimal::from_bytes(&bytes).is_err(),
+            "{bytes:02x?} should fail"
         );
     }
-
-    let mut shuffled: Vec<usize> = (0..encoded.len()).collect();
-    shuffled.sort_by(|&a, &b| encoded[a].cmp(&encoded[b]));
-    assert_eq!(
-        shuffled,
-        (0..encoded.len()).collect::<Vec<_>>(),
-        "sorting by encoded bytes did not reproduce numeric order"
-    );
 }
 
 #[test]
-fn malformed_escaped_exponents_are_rejected() {
-    // Positive escape marker with a truncated extended exponent.
-    assert!(Decimal::from_bytes(&[0xff, 0xff, 0xfd]).is_err());
+fn boundary_sweep_and_special_values_preserve_sort_order() {
+    for negative in [false, true] {
+        let values: Vec<Value> = (LAST_INLINE_EXPONENT - 40..=LAST_INLINE_EXPONENT + 40)
+            .map(|exponent| Value {
+                negative,
+                digits: "1234567890123456789".to_string(),
+                exponent,
+            })
+            .collect();
 
-    // The escape form must not be used for an inline exponent or for a value
-    // outside PostgreSQL's supported range.
-    assert!(Decimal::from_bytes(&[0xff, 0xff, 0xfd, 0, 0, 0, 1, 0x10]).is_err());
-    assert!(Decimal::from_bytes(&[0xff, 0xff, 0xfd, 0, 2, 0, 1, 0x10]).is_err());
+        let mut by_bytes = values.clone();
+        by_bytes.sort_by_key(Value::encode);
+        let mut mathematically = values;
+        mathematically.sort_by(Value::cmp_mathematically);
+        assert_eq!(by_bytes, mathematically);
+    }
 
-    // Negative escaped exponents are complemented on the wire as well.
-    assert!(Decimal::from_bytes(&[0x00, 0x00, 0x02, 0xff, 0xff, 0xff, 0xff, 0xef]).is_err());
+    let negative_infinity = encode("-Infinity");
+    let positive_infinity = encode("Infinity");
+    let nan = encode("NaN");
+    let smallest = encode(&format!("-0.9e{MAX_NORMALIZED_EXPONENT}"));
+    let biggest = encode(&format!("0.9e{MAX_NORMALIZED_EXPONENT}"));
+
+    assert!(negative_infinity < smallest);
+    assert!(biggest < positive_infinity);
+    assert!(positive_infinity < nan);
 }
 
 proptest! {
-    #![proptest_config(ProptestConfig::with_cases(64))]
+    #![proptest_config(ProptestConfig::with_cases(2_048))]
 
-    /// For any two powers of ten across the inline/escaped boundary, byte order
-    /// must agree with numeric order for both signs.
     #[test]
-    fn byte_order_matches_numeric_order(
-        a in 0usize..=MAX_PG_ZEROS,
-        b in 0usize..=MAX_PG_ZEROS,
-        negative in any::<bool>(),
-    ) {
-        let ea = encode(&pow10(a, negative));
-        let eb = encode(&pow10(b, negative));
-
-        // Larger exponent means a larger value when positive, and a smaller
-        // value when negative.
-        let expected = if negative { b.cmp(&a) } else { a.cmp(&b) };
-        prop_assert_eq!(ea.cmp(&eb), expected);
+    fn byte_order_matches_mathematical_order(a in value_strategy(), b in value_strategy()) {
+        prop_assert_eq!(a.encode().cmp(&b.encode()), a.cmp_mathematically(&b));
     }
+}
 
-    /// Every value in range must survive a round trip unchanged.
-    #[test]
-    fn round_trips(zeros in 0usize..=MAX_PG_ZEROS, negative in any::<bool>()) {
-        let s = pow10(zeros, negative);
-        let d = Decimal::from_str(&s).map_err(|e| TestCaseError::fail(format!("{e:?}")))?;
-        prop_assert_eq!(d.to_string(), s);
-    }
+#[test]
+fn widest_postgres_values_round_trip() {
+    let integer: String = (0..131_072)
+        .map(|index| (b'1' + (index % 9) as u8) as char)
+        .collect();
+    let mut full = integer.clone();
+    full.push('.');
+    full.extend((0..16_383).map(|index| (b'1' + (index % 9) as u8) as char));
 
-    /// Mantissas longer than one digit must also survive, since the escaped
-    /// exponent sits directly in front of the mantissa bytes.
-    #[test]
-    fn round_trips_with_multi_digit_mantissa(
-        zeros in 49_140usize..=49_160,
-        mantissa in 1u64..=999_999,
-        negative in any::<bool>(),
-    ) {
-        let mut s = String::new();
-        if negative {
-            s.push('-');
-        }
-        let digits = mantissa.to_string();
-        let digits = digits.trim_end_matches('0');
-        let digits = if digits.is_empty() { "0" } else { digits };
-        s.push_str(digits);
-        for _ in 0..zeros {
-            s.push('0');
-        }
-
-        let d = Decimal::from_str(&s).map_err(|e| TestCaseError::fail(format!("{e:?}")))?;
-        prop_assert_eq!(d.to_string(), s);
+    for value in [&integer, &full] {
+        assert_eq!(Decimal::from_str(value).unwrap().to_string(), *value);
     }
 }

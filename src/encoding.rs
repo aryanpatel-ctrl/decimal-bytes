@@ -10,7 +10,11 @@
 //! ```
 //!
 //! - **Sign byte**: 0x00 for negative, 0x80 for zero, 0xFF for positive
-//! - **Exponent**: Variable-length, biased encoding (inverted for negative numbers)
+//! - **Exponent**: A 2-byte biased value for exponents through `49148`; larger
+//!   exponents use `0xFFFD` followed by a 4-byte exponent. `0xFFFE` and
+//!   `0xFFFF` remain reserved for `+Infinity` and `NaN`. Negative values use
+//!   the complemented field: the escape marker is `0x0002` and `0x0000` is
+//!   reserved for `-Infinity`.
 //! - **Mantissa**: BCD-encoded digits, 2 per byte. Negative numbers store the
 //!   nine's complement of each digit and end with a `0xFF` terminator byte.
 //!
@@ -77,10 +81,12 @@ const MAX_INLINE_EXPONENT: i32 = 0xFFFC - EXPONENT_BIAS;
 /// Width of the extended exponent written after the escape marker.
 const EXTENDED_EXPONENT_LEN: usize = 4;
 
-/// PostgreSQL allows at most 131072 digits left of the decimal point, so this
-/// covers every finite NUMERIC it can hand us.
+/// Bound decoded exponents to keep `format_decimal` allocations reasonable.
+/// This also covers the complete finite PostgreSQL NUMERIC exponent range.
 const MAX_EXPONENT: i32 = 131_072;
-const MIN_EXPONENT: i32 = -EXPONENT_BIAS + 1; // Reserve 0x0000 for -Infinity
+/// The lower bound reserves `0x0000` for negative infinity and covers the
+/// smallest exponent emitted by PostgreSQL NUMERIC.
+const MIN_EXPONENT: i32 = -EXPONENT_BIAS + 1;
 
 /// Errors that can occur during decimal encoding/decoding.
 #[derive(Error, Debug, Clone, PartialEq)]
@@ -341,7 +347,7 @@ fn parse_decimal(value: &str) -> Result<(bool, Vec<u8>, i32), DecimalError> {
     }
 
     // Parse exponent (required if 'e' or 'E' was seen)
-    let mut exp_offset: i32 = 0;
+    let mut exp_offset: i64 = 0;
     if seen_exponent_marker {
         if chars.peek().is_none() {
             return Err(DecimalError::InvalidFormat(
@@ -386,8 +392,15 @@ fn parse_decimal(value: &str) -> Result<(bool, Vec<u8>, i32), DecimalError> {
     // Extract the significant digits
     let significant = &all_digits[first_nonzero..=last_nonzero];
 
-    // Calculate the exponent
-    let exponent = (decimal_position as i32) - (first_nonzero as i32) + exp_offset;
+    // Calculate the exponent without allowing malformed input to overflow.
+    let decimal_position =
+        i64::try_from(decimal_position).map_err(|_| DecimalError::PrecisionOverflow)?;
+    let first_nonzero =
+        i64::try_from(first_nonzero).map_err(|_| DecimalError::PrecisionOverflow)?;
+    let exponent = decimal_position
+        .checked_sub(first_nonzero)
+        .and_then(|exponent| exponent.checked_add(exp_offset))
+        .ok_or(DecimalError::PrecisionOverflow)?;
 
     // Convert significant digits to bytes
     let digits: Vec<u8> = significant
@@ -396,33 +409,29 @@ fn parse_decimal(value: &str) -> Result<(bool, Vec<u8>, i32), DecimalError> {
         .collect();
 
     // Validate exponent range
-    if !(MIN_EXPONENT..=MAX_EXPONENT).contains(&exponent) {
+    if !(i64::from(MIN_EXPONENT)..=i64::from(MAX_EXPONENT)).contains(&exponent) {
         return Err(DecimalError::PrecisionOverflow);
     }
 
-    Ok((is_negative, digits, exponent))
+    Ok((is_negative, digits, exponent as i32))
 }
 
 /// Encodes the exponent as variable-length bytes.
 fn encode_exponent(result: &mut Vec<u8>, exponent: i32, is_negative: bool) {
-    // Complementing preserves descending magnitude order for negative values.
-    let push_inline = |result: &mut Vec<u8>, biased: u16| {
-        let encoded = if is_negative { !biased } else { biased };
-
-        result.push((encoded >> 8) as u8);
-        result.push((encoded & 0xFF) as u8);
+    let escaped = exponent > MAX_INLINE_EXPONENT;
+    let biased = if escaped {
+        ESCAPED_EXPONENT_MARKER
+    } else {
+        (exponent + EXPONENT_BIAS) as u16
     };
+    let encoded = if is_negative { !biased } else { biased };
+    result.extend_from_slice(&encoded.to_be_bytes());
 
-    if exponent > MAX_INLINE_EXPONENT {
-        // The extended exponent is complemented for negative values as well.
-        push_inline(result, ESCAPED_EXPONENT_MARKER);
+    if escaped {
         let extended = exponent as u32;
         let encoded = if is_negative { !extended } else { extended };
         result.extend_from_slice(&encoded.to_be_bytes());
-        return;
     }
-
-    push_inline(result, (exponent + EXPONENT_BIAS) as u16);
 }
 
 /// Decodes the exponent from bytes.
@@ -461,6 +470,9 @@ fn decode_exponent(bytes: &[u8], is_negative: bool) -> Result<(i32, usize), Deci
     }
 
     let exponent = (biased as i32) - EXPONENT_BIAS;
+    if !(MIN_EXPONENT..=MAX_INLINE_EXPONENT).contains(&exponent) {
+        return Err(DecimalError::InvalidEncoding);
+    }
 
     Ok((exponent, 2))
 }
