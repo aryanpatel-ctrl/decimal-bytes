@@ -165,7 +165,9 @@ fn values_outside_the_supported_range_are_rejected() {
 }
 
 #[test]
-fn inline_encodings_are_byte_for_byte_unchanged() {
+fn encodings_are_byte_for_byte_stable() {
+    // Inline encodings must stay byte-identical for on-disk compatibility.
+    // Escaped rows pin the post-inline form that also lands in indexes.
     let golden = [
         ("0", "80"),
         ("1", "ff400110"),
@@ -184,6 +186,8 @@ fn inline_encodings_are_byte_for_byte_unchanged() {
         ("-1e16000", "00817e89ff"),
         ("1e16380", "ff7ffd10"),
         ("-1e16380", "00800289ff"),
+        ("1e49148", "fffffd0000bffd10"),
+        ("-1e49148", "000002ffff400289ff"),
         ("Infinity", "fffffe"),
         ("-Infinity", "000000"),
         ("NaN", "ffffff"),

@@ -273,7 +273,7 @@ The encoding matches PostgreSQL's storage efficiency (2 bytes per 4 decimal digi
 - ~N/2 bytes for N-digit mantissa (BCD encoding: 2 digits per byte), plus 1 terminator byte for negative numbers
 - Special values: 3 bytes each
 
-Inline exponents use a biased 2-byte field. Values above `49,148` use the
+Inline exponents use a biased 2-byte field. Exponents above `49,148` use the
 reserved `0xFFFD` escape marker followed by a 4-byte exponent; `0xFFFE` and
 `0xFFFF` are reserved for `+Infinity` and `NaN`.
 
